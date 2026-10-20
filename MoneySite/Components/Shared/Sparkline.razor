@@ -1,0 +1,28 @@
+@* Tiny trend line for a table cell: green when it ends higher than it started, red when lower. *@
+@if (_line.Length > 0)
+{
+    <svg class="spark @_tone" viewBox="0 0 100 28" preserveAspectRatio="none" role="img" aria-label="@AriaLabel">
+        <polyline points="@_line" />
+    </svg>
+}
+
+@code {
+    [Parameter, EditorRequired] public List<ChartPoint> Points { get; set; } = new();
+    [Parameter] public string AriaLabel { get; set; } = "Trend";
+
+    private string _line = "", _tone = "";
+
+    protected override void OnParametersSet()
+    {
+        _line = "";
+        if (Points.Count < 2) return;
+        var min = Points.Min(p => p.Value);
+        var max = Points.Max(p => p.Value);
+        var span = max - min;
+        string F(double v) => v.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture);
+        _line = string.Join(" ", Points.Select((p, i) =>
+            $"{F(i * 100.0 / (Points.Count - 1))},{F(span == 0 ? 14 : 2 + (double)((max - p.Value) / span) * 24)}"));
+        var diff = Points[^1].Value - Points[0].Value;
+        _tone = diff > 0 ? "pos" : diff < 0 ? "neg" : "flat";
+    }
+}

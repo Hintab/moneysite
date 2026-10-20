@@ -1,0 +1,16 @@
+@* A clickable, sortable table header cell. Clicking the active column flips the direction. *@
+
+<th class="sortable @Class" aria-sort="@(Current == Key ? (Desc ? "descending" : "ascending") : "none")">
+    <button type="button" @onclick="() => OnSort.InvokeAsync(Key)">
+        @Label<span class="arrow" aria-hidden="true">@(Current == Key ? (Desc ? "▼" : "▲") : "↕")</span>
+    </button>
+</th>
+
+@code {
+    [Parameter, EditorRequired] public string Key { get; set; } = "";
+    [Parameter, EditorRequired] public string Label { get; set; } = "";
+    [Parameter] public string? Current { get; set; }
+    [Parameter] public bool Desc { get; set; }
+    [Parameter] public string? Class { get; set; }
+    [Parameter] public EventCallback<string> OnSort { get; set; }
+}

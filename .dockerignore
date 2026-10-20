@@ -1,0 +1,30 @@
+# Build output
+**/bin/
+**/obj/
+.vs/
+**/*.user
+
+# Personal financial data and Plaid access tokens: never bake them into an image.
+data/
+**/Data/*.db*
+**/*.db
+**/*.db-shm
+**/*.db-wal
+**/*.db-journal
+
+# Secrets
+.env
+.env.*
+!.env.example
+**/secrets.json
+**/appsettings.*.local.json
+
+# Docker / docs / misc
+.git/
+Dockerfile
+docker-compose.yml
+*.md
+unsloth-tmp/
+.unsloth_attachments/
+NuGet/
+*.py

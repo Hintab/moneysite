@@ -1,0 +1,451 @@
+@page "/accounts"
+@page "/plaid"
+@implements IDisposable
+@inject PlaidService PlaidSvc
+@inject IDbContextFactory<MoneyContext> DbFactory
+@inject ReportService Reports
+@inject DataWindow Window
+@inject Categorizer Categorizer
+@inject IJSRuntime JS
+
+@* Connected banks and their accounts in one place: connect, sync, label, disconnect. *@
+
+<PageTitle>Accounts · Money Manager</PageTitle>
+<div class="page-head">
+    <div>
+        <h1>Accounts</h1>
+        <p class="muted small">Each bank re-syncs once a day while the app runs. Balances are on <a href="networth">Net Worth</a>.</p>
+    </div>
+    @if (PlaidSvc.IsConfigured)
+    {
+        var atLimit = _connectedAccounts >= PlaidSvc.MaxAccounts;
+        <div class="row" style="margin:0">
+            <span class="status @(atLimit ? "warn" : "")" title="@(atLimit ? "Disconnect a bank to add another." : $"Up to {PlaidSvc.MaxAccounts - _connectedAccounts} more can be added — you can untick accounts you don't need in Plaid's window.")">
+                @_connectedAccounts of @PlaidSvc.MaxAccounts accounts
+            </span>
+            @if (_items.Count > 0)
+            {
+                <button class="btn secondary" @onclick="SyncAll" disabled="@_busy">Sync all</button>
+            }
+            <button class="btn" @onclick="Connect" disabled="@(_busy || atLimit)">+ Connect a bank</button>
+        </div>
+    }
+</div>
+
+@if (!PlaidSvc.IsConfigured)
+{
+    <div class="notice">
+        <p><b>Plaid isn't set up yet.</b> Get your keys from the Plaid dashboard (Developers → Keys), then from the
+            <code>MoneySite</code> folder run:</p>
+        <pre>dotnet user-secrets set "Plaid:ClientID" "your-client-id"
+dotnet user-secrets set "Plaid:ClientSecret" "your-secret"</pre>
+        <p>and restart the app.</p>
+    </div>
+}
+else if (PlaidSvc.EnvironmentName == "sandbox")
+{
+    <p class="muted small">Test mode: sign in to any bank with <code>user_good</code> / <code>pass_good</code>.</p>
+}
+
+@if (!string.IsNullOrEmpty(_status))
+{
+    <p class="@(_statusIsError ? "error" : "msg")">@_status</p>
+}
+
+@if (_items.Count == 0 && _accounts.Count == 0)
+{
+    <div class="empty"><p>No accounts yet — click <b>Connect a bank</b> to get started.</p></div>
+}
+
+@* ---------- One card per connected bank ---------- *@
+@foreach (var it in _items)
+{
+    var mine = _accounts.Where(b => b.Account.PlaidItemId == it.Id).OrderBy(b => b.Account.Name).ToList();
+    <section class="panel bank-card">
+        <header class="bank-head">
+            <div>
+                <h2>@it.Name</h2>
+                <div class="muted small">
+                    Synced @(it.LastSyncedAt?.ToLocalTime().ToString("MMM d, h:mm tt") ?? "never") · @mine.Count account@(mine.Count == 1 ? "" : "s")
+                </div>
+                @if (!string.IsNullOrEmpty(it.LastError))
+                {
+                    <div class="error small">Last sync failed: @it.LastError</div>
+                }
+            </div>
+            <div class="bank-actions">
+                @if (_confirmDisconnect == it.Id)
+                {
+                    <span class="small">Stop syncing? History is kept.</span>
+                    <button class="btn danger" @onclick="() => Disconnect(it)" disabled="@_busy">Disconnect</button>
+                    <button class="btn secondary" @onclick="() => _confirmDisconnect = null">Cancel</button>
+                }
+                else
+                {
+                    <button class="btn secondary" @onclick="() => SyncItem(it)" disabled="@_busy">Sync now</button>
+                    <button class="icon danger" title="Disconnect this bank" @onclick="() => _confirmDisconnect = it.Id" disabled="@_busy">✕</button>
+                }
+            </div>
+        </header>
+
+        @if (it.HasInvestments)
+        {
+            <div class="small inv-line">
+                @switch (it.InvestmentsStatus)
+                {
+                    case null when it.Holdings > 0:
+                        <span class="muted">Investments: @it.Holdings holdings, @it.Activity activity records</span>
+                        break;
+                    case null:
+                        <span class="muted">Investments not pulled yet — click Sync now.</span>
+                        break;
+                    case "consent":
+                        <span>Investments need a one-time approval.</span>
+                        <button class="btn" @onclick="() => EnableInvestments(it)" disabled="@_busy">Enable investment tracking</button>
+                        break;
+                    case "preparing":
+                        <span class="muted">Plaid is still preparing investment data — try Sync now later.</span>
+                        break;
+                    default:
+                        <span class="error">Investments unavailable: @it.InvestmentsStatus</span>
+                        break;
+                }
+            </div>
+        }
+
+        <table class="table">
+            <tbody>
+            @foreach (var b in mine)
+            {
+                <tr>
+                    <td><a href="transactions?account=@b.Account.Id">@b.Account.Name</a></td>
+                    <td class="num"><TypePicker Account="b.Account" OnChange="SetType" /></td>
+                </tr>
+            }
+            </tbody>
+        </table>
+    </section>
+}
+
+@* ---------- Accounts whose bank was disconnected (history kept) ---------- *@
+@{ var orphans = _accounts.Where(b => b.Account.PlaidItemId is null).OrderBy(b => b.Account.Name).ToList(); }
+@if (orphans.Count > 0)
+{
+    <section class="panel">
+        <h2>Disconnected <span class="muted small">· history kept, no longer syncing</span></h2>
+        <table class="table">
+            <tbody>
+            @foreach (var b in orphans)
+            {
+                var a = b.Account;
+                <tr>
+                    <td><a href="transactions?account=@a.Id">@a.Name</a><div class="muted small">@a.Institution</div></td>
+                    <td class="num"><TypePicker Account="a" OnChange="SetType" /></td>
+                    <td class="num nowrap">
+                        @if (_confirmDelete == a.Id)
+                        {
+                            <span class="small">Delete with its @b.TransactionCount transactions?</span>
+                            <button class="btn danger" @onclick="() => Delete(a)">Delete</button>
+                            <button class="btn secondary" @onclick="() => _confirmDelete = null">Cancel</button>
+                        }
+                        else
+                        {
+                            <button class="icon danger" title="Delete account and its history" @onclick="() => _confirmDelete = a.Id">✕</button>
+                        }
+                    </td>
+                </tr>
+            }
+            </tbody>
+        </table>
+    </section>
+}
+
+@* ---------- History window ---------- *@
+@if (_histories.Count > 1)
+{
+    <section class="panel">
+        <h2>History window <span class="info" title="Banks send different amounts of history. Reports can start on the date your shortest account history begins, so every account covers the same dates. Older transactions are hidden, not deleted.">i</span></h2>
+        <label class="check">
+            <input type="checkbox" checked="@_aligned" @onchange="ToggleAligned" />
+            Only show data from <b>@_latestStart.ToString("MMM d, yyyy")</b> on
+        </label>
+        <details>
+            <summary>History per account</summary>
+            <table class="table">
+                <tbody>
+                @foreach (var h in _histories)
+                {
+                    <tr class="@(h.First == _latestStart ? "selected" : "")">
+                        <td>@h.Name</td>
+                        <td class="num nowrap muted small">@h.First.ToString("MMM d, yyyy") – @h.Last.ToString("MMM d, yyyy")</td>
+                    </tr>
+                }
+                </tbody>
+            </table>
+        </details>
+    </section>
+}
+
+@code {
+    private record PlaidItemRow(int Id, string Name, DateTime? LastSyncedAt, string? LastError,
+        bool HasInvestments, string? InvestmentsStatus, int Holdings, int Activity);
+
+    private List<PlaidItemRow> _items = new();
+    private List<AccountBalance> _accounts = new();
+    private List<AccountHistory> _histories = new();
+    private DateTime _latestStart;
+    private bool _aligned, _statusIsError, _busy;
+    private int _connectedAccounts;
+    private int? _confirmDisconnect, _confirmDelete, _consentItemId;
+    private string _status = "";
+    private DotNetObjectReference<Accounts>? _selfRef;
+
+    protected override async Task OnInitializedAsync() => await Load();
+
+    private async Task Load()
+    {
+        await using (var db = await DbFactory.CreateDbContextAsync())
+        {
+            _connectedAccounts = await db.Accounts.CountAsync(a => a.PlaidItemId != null);
+            _items = await db.PlaidItems.OrderBy(p => p.CreatedAt)
+                .Select(p => new PlaidItemRow(p.Id, p.Name, p.LastSyncedAt, p.LastError,
+                    p.Accounts.Any(a => a.Type == AccountType.Investment || a.Type == AccountType.Retirement), p.InvestmentsStatus,
+                    db.Holdings.Count(h => p.Accounts.Select(a => a.Id).Contains(h.AccountId)),
+                    db.InvestmentTransactions.Count(t => p.Accounts.Select(a => a.Id).Contains(t.AccountId))))
+                .ToListAsync();
+        }
+        _accounts = await Reports.AccountBalancesAsync();
+        _histories = await Window.HistoriesAsync();
+        _latestStart = _histories.Count > 0 ? _histories.Max(h => h.First) : DateTime.Today;
+        _aligned = await Window.IsAlignedAsync();
+    }
+
+    private void SetStatus(string text, bool error = false)
+    {
+        _status = text;
+        _statusIsError = error;
+    }
+
+    private string Skipped(PullResult r) => r.SkippedAccounts > 0
+        ? $" {r.SkippedAccounts} account{(r.SkippedAccounts == 1 ? " wasn" : "s weren")}'t added — you're at the {PlaidSvc.MaxAccounts}-account limit."
+        : "";
+
+    // ---------- Connecting ----------
+
+    private async Task Connect()
+    {
+        _busy = true;
+        SetStatus("Opening Plaid…");
+        try
+        {
+            var token = await PlaidSvc.CreateLinkTokenAsync();
+            _selfRef ??= DotNetObjectReference.Create(this);
+            await JS.InvokeVoidAsync("openPlaidLink", token, _selfRef);
+        }
+        catch (Exception ex)
+        {
+            _busy = false;
+            SetStatus("Couldn't open Plaid: " + ex.Message, true);
+        }
+    }
+
+    [JSInvokable]
+    public async Task PlaidLinkSuccess(string publicToken, string institutionName)
+    {
+        if (string.IsNullOrEmpty(publicToken))
+        {
+            _busy = false;
+            SetStatus("Plaid closed without connecting a bank.", true);
+            StateHasChanged();
+            return;
+        }
+
+        int itemId;
+        try
+        {
+            SetStatus($"Connecting {institutionName}…");
+            StateHasChanged();
+            var (accessToken, plaidItemId) = await PlaidSvc.ExchangePublicTokenAsync(publicToken);
+            await using var db = await DbFactory.CreateDbContextAsync();
+            var item = new PlaidItem { PlaidItemId = plaidItemId, AccessToken = accessToken, Name = institutionName, Institution = institutionName };
+            db.PlaidItems.Add(item);
+            await db.SaveChangesAsync();
+            itemId = item.Id;
+        }
+        catch (Exception ex)
+        {
+            _busy = false;
+            SetStatus("Couldn't connect the bank: " + ex.Message, true);
+            StateHasChanged();
+            return;
+        }
+
+        SetStatus($"Connected {institutionName}. Downloading transactions — this can take up to a minute the first time…");
+        await Load();
+        StateHasChanged();
+        try
+        {
+            var r = await PlaidSvc.PullItemAsync(itemId);
+            SetStatus($"Connected {institutionName}. Pulled {r.Added} transactions." + Skipped(r));
+        }
+        catch (Exception ex)
+        {
+            SetStatus($"Connected {institutionName}, but the first sync failed: {ex.Message}. Try \"Sync now\" in a minute.", true);
+        }
+        _busy = false;
+        await Load();
+        StateHasChanged();
+    }
+
+    /// Re-opens Plaid for an existing connection so investments access can be approved.
+    private async Task EnableInvestments(PlaidItemRow it)
+    {
+        _busy = true;
+        SetStatus("Opening Plaid…");
+        try
+        {
+            string accessToken;
+            await using (var db = await DbFactory.CreateDbContextAsync())
+                accessToken = await db.PlaidItems.Where(p => p.Id == it.Id).Select(p => p.AccessToken).FirstAsync();
+            var token = await PlaidSvc.CreateInvestmentsConsentTokenAsync(accessToken);
+            _consentItemId = it.Id;
+            _selfRef ??= DotNetObjectReference.Create(this);
+            await JS.InvokeVoidAsync("openPlaidLink", token, _selfRef, "PlaidConsentSuccess");
+        }
+        catch (Exception ex)
+        {
+            _busy = false;
+            SetStatus("Couldn't open Plaid: " + ex.Message, true);
+        }
+    }
+
+    [JSInvokable]
+    public async Task PlaidConsentSuccess(string publicToken, string institutionName)
+    {
+        if (_consentItemId is not int id) return;
+        SetStatus("Approved. Downloading investment holdings and activity…");
+        StateHasChanged();
+        try
+        {
+            await PlaidSvc.PullItemAsync(id);
+            await Load();
+            var row = _items.FirstOrDefault(i => i.Id == id);
+            SetStatus(row?.InvestmentsStatus is null
+                ? $"Investment tracking is on: {row?.Holdings} holdings and {row?.Activity} activity records."
+                : "Approved, but investments aren't available yet — see the note on the bank.", row?.InvestmentsStatus is not null);
+        }
+        catch (Exception ex)
+        {
+            SetStatus("Sync failed: " + ex.Message, true);
+        }
+        _busy = false;
+        _consentItemId = null;
+        await Load();
+        StateHasChanged();
+    }
+
+    [JSInvokable]
+    public void PlaidLinkError(string message)
+    {
+        _busy = false;
+        if (message == "cancelled") SetStatus("");
+        else SetStatus("Plaid closed: " + message, true);
+        StateHasChanged();
+    }
+
+    // ---------- Syncing & disconnecting ----------
+
+    private async Task SyncItem(PlaidItemRow it)
+    {
+        _busy = true;
+        SetStatus($"Syncing {it.Name}…");
+        StateHasChanged();
+        try
+        {
+            var r = await PlaidSvc.PullItemAsync(it.Id);
+            SetStatus($"{it.Name}: {r.Added} new, {r.Updated} updated, {r.Removed} removed." + Skipped(r));
+        }
+        catch (Exception ex)
+        {
+            SetStatus("Sync failed: " + ex.Message, true);
+        }
+        _busy = false;
+        await Load();
+    }
+
+    private async Task SyncAll()
+    {
+        _busy = true;
+        int added = 0;
+        var failed = new List<string>();
+        foreach (var it in _items)
+        {
+            SetStatus($"Syncing {it.Name}…");
+            StateHasChanged();
+            try { added += (await PlaidSvc.PullItemAsync(it.Id)).Added; }
+            catch { failed.Add(it.Name); }
+        }
+        SetStatus(failed.Count == 0 ? $"All banks synced. {added} new transactions."
+                                    : $"Synced, {added} new transactions — but {string.Join(", ", failed)} failed (see below).", failed.Count > 0);
+        _busy = false;
+        await Load();
+    }
+
+    private async Task Disconnect(PlaidItemRow it)
+    {
+        _confirmDisconnect = null;
+        _busy = true;
+        await using var db = await DbFactory.CreateDbContextAsync();
+        var item = await db.PlaidItems.FirstAsync(p => p.Id == it.Id);
+        var note = "";
+        try { await PlaidSvc.RemoveItemAsync(item.AccessToken); }
+        catch (Exception ex) { note = $" (Plaid didn't confirm the removal: {ex.Message})"; }
+
+        await db.Accounts.Where(a => a.PlaidItemId == it.Id)
+            .ExecuteUpdateAsync(s => s.SetProperty(a => a.PlaidItemId, (int?)null));
+        db.PlaidItems.Remove(item);
+        await db.SaveChangesAsync();
+        _busy = false;
+        await Load();
+        SetStatus($"Disconnected {it.Name}. Its accounts and past transactions are kept." + note);
+    }
+
+    // ---------- Accounts ----------
+
+    /// Relabels an account. Syncs keep this label from now on. Card ↔ bank changes matter for
+    /// card-payment matching and net worth, so categories are re-run.
+    private async Task SetType((Account Account, AccountType Type) change)
+    {
+        var (a, type) = change;
+        if (type == a.Type) return;
+        await using (var db = await DbFactory.CreateDbContextAsync())
+            await db.Accounts.Where(x => x.Id == a.Id)
+                .ExecuteUpdateAsync(s => s.SetProperty(x => x.Type, type).SetProperty(x => x.TypeSetByUser, true));
+        if (a.Type.IsLiability() != type.IsLiability())
+            await Categorizer.CategorizeAsync(reapplyAll: true);
+        SetStatus($"\"{a.Name}\" is now labeled {type.Label()}.");
+        await Load();
+    }
+
+    private async Task Delete(Account a)
+    {
+        _confirmDelete = null;
+        await using (var db = await DbFactory.CreateDbContextAsync())
+        {
+            await db.Transactions.Where(t => t.AccountId == a.Id).ExecuteDeleteAsync();
+            await db.BalanceSnapshots.Where(s => s.AccountId == a.Id).ExecuteDeleteAsync();
+            await db.Accounts.Where(x => x.Id == a.Id).ExecuteDeleteAsync();
+        }
+        SetStatus($"Deleted \"{a.Name}\" and its history.");
+        await Load();
+    }
+
+    private async Task ToggleAligned(ChangeEventArgs e)
+    {
+        _aligned = e.Value is true;
+        await Window.SetAlignedAsync(_aligned);
+        SetStatus(_aligned ? $"Reports now start on {_latestStart:MMM d, yyyy}." : "Reports now use all history.");
+    }
+
+    public void Dispose() => _selfRef?.Dispose();
+}

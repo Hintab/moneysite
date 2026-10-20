@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#0d1016" media="(prefers-color-scheme: dark)" />
+    <meta name="theme-color" content="#f3f5fa" media="(prefers-color-scheme: light)" />
+    <base href="/" />
+    <title>Money Manager</title>
+    <link rel="stylesheet" href="app.css" />
+    <script src="https://cdn.plaid.com/link/v2/stable/link-initialize.js"></script>
+    <script src="app.js"></script>
+    <HeadOutlet @rendermode="InteractiveServer" />
+</head>
+<body>
+    <Routes @rendermode="InteractiveServer" />
+    <div id="blazor-error-ui">
+        Something went wrong. <a href="" class="reload">Reload</a>
+        <a class="dismiss">✕</a>
+    </div>
+    <script src="_framework/blazor.web.js"></script>
+</body>
+</html>

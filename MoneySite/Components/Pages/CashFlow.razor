@@ -1,0 +1,366 @@
+@page "/"
+@page "/cashflow"
+@inject ReportService Reports
+@inject DataWindow Window
+
+<PageTitle>Income vs Spending · Money Manager</PageTitle>
+<div class="page-head">
+    <div>
+        <h1>Income vs Spending</h1>
+        @if (_r is not null)
+        {
+            <p class="muted small">
+                @_r.From.ToString("MMM d, yyyy") – @(_r.ToExclusive.AddDays(-1) < DateTime.Today ? _r.ToExclusive.AddDays(-1).ToString("MMM d, yyyy") : "today")
+                <span class="info" title="Transfers between your own accounts and credit-card payments are left out of both income and spending.">i</span>
+            </p>
+        }
+    </div>
+    <div class="period-pick">
+        <div class="seg" role="group" aria-label="Period">
+            @foreach (var p in Periods)
+            {
+                <button class="@(p.Key == _period ? "on" : "")" @onclick="() => Load(p.Key)">@p.Label</button>
+            }
+        </div>
+        <select class="@(_period.StartsWith("m:") ? "on" : "")" value="@(_period.StartsWith("m:") ? _period : "")"
+                @onchange="@(e => PickMonth(e.Value?.ToString()))" aria-label="Pick a month">
+            <option value="">By month…</option>
+            @foreach (var m in _monthOptions)
+            {
+                <option value="@($"m:{m:yyyy-MM}")">@m.ToString("MMMM yyyy")</option>
+            }
+        </select>
+    </div>
+</div>
+
+@if (_r is null)
+{
+    <p class="muted">Loading…</p>
+    return;
+}
+
+@if (_balances.Count == 0)
+{
+    <div class="empty">
+        <p><b>No accounts yet.</b> Connect a bank with Plaid to pull in your accounts, balances and transactions.</p>
+        <p><a class="btn" href="accounts">Connect a bank</a></p>
+    </div>
+}
+
+@{ var cur = _r.Current; var prev = _r.Previous; var perMonth = cur.Months > 1; }
+
+@* ---------- Headline numbers ---------- *@
+<div class="kpis">
+    <div class="kpi">
+        <small>Income</small>
+        <b class="pos">@Money.Whole(cur.Income)</b>
+        @if (perMonth)
+        {
+            <span class="delta">@Money.Whole(cur.AvgIncome) a month</span>
+        }
+        <Delta Now="cur.Income" Before="prev?.Income" Label="@_prevLabel" GoodWhenUp="true" />
+    </div>
+    <div class="kpi">
+        <small>Spending</small>
+        <b class="neg">@Money.Whole(cur.Spending)</b>
+        @if (perMonth)
+        {
+            <span class="delta">@Money.Whole(cur.AvgSpending) a month</span>
+        }
+        <Delta Now="cur.Spending" Before="prev?.Spending" Label="@_prevLabel" GoodWhenUp="false" />
+    </div>
+    <div class="kpi hero @(cur.Net >= 0 ? "up" : "down")">
+        <small>@(cur.Net >= 0 ? "Saved" : "Overspent")</small>
+        <b>@Money.Whole(Math.Abs(cur.Net))</b>
+        <Delta Now="cur.Net" Before="prev?.Net" Label="@_prevLabel" GoodWhenUp="true" />
+    </div>
+    <div class="kpi">
+        <small>Savings rate</small>
+        <b>@(cur.SavingsRate is decimal sr ? sr.ToString("P0") : "–")</b>
+        @if (cur.SavingsRate is decimal a && prev?.SavingsRate is decimal b)
+        {
+            <span class="delta">@(a >= b ? "▲" : "▼") @Math.Abs((a - b) * 100).ToString("0") pts vs @_prevLabel</span>
+        }
+    </div>
+</div>
+
+@* ---------- This month's pace ---------- *@
+@if (_r.Pace is MonthPace pace)
+{
+    var pct = pace.TypicalMonth > 0 ? (double)Math.Min(1.5m, pace.SpentSoFar / pace.TypicalMonth) : 0;
+    var marker = pace.TypicalMonth > 0 ? (double)Math.Min(1.5m, pace.Projected / pace.TypicalMonth) : 0;
+    <section class="panel pace">
+        <h2>@DateTime.Today.ToString("MMMM") so far</h2>
+        <p>
+            <b class="neg">@Money.Whole(pace.SpentSoFar)</b> spent in @pace.DaysElapsed of @pace.DaysInMonth days · on pace for
+            <b class="neg">@Money.Whole(pace.Projected)</b>@(pace.TypicalMonth > 0
+                ? $" ({(pace.Projected <= pace.TypicalMonth ? "under" : $"{Money.Whole(pace.Projected - pace.TypicalMonth)} over")} a typical {Money.Whole(pace.TypicalMonth)})"
+                : "")
+        </p>
+        @if (pace.TypicalMonth > 0)
+        {
+            <div class="pace-track" data-tip="@($"{DateTime.Today:MMMM}|Spent so far {Money.Cents(pace.SpentSoFar)}|Projected {Money.Cents(pace.Projected)}|Typical month {Money.Cents(pace.TypicalMonth)}")">
+                <div class="pace-fill" style="width:@Pct(pct / 1.5)%"></div>
+                <div class="pace-proj" style="left:@Pct(marker / 1.5)%"></div>
+                <div class="pace-typical" style="left:@Pct(1 / 1.5)%"><span>typical</span></div>
+            </div>
+        }
+    </section>
+}
+
+@* ---------- Month by month (chart, table on request) ---------- *@
+@if (_r.Months.Count > 1)
+{
+    <section class="panel">
+        <h2>Month by month</h2>
+        <FlowChart Months="_r.Months" />
+        <details>
+            <summary>Show as table</summary>
+            <div class="scroll-x">
+                <table class="table">
+                    <thead>
+                        <tr><th>Month</th><th class="num">Income</th><th class="num">Spending</th><th class="num">Saved</th>
+                            <th class="num hide-sm">Rate</th><th class="num hide-sm">Running total</th></tr>
+                    </thead>
+                    <tbody>
+                    @{ decimal running = 0; }
+                    @foreach (var m in _r.Months)
+                    {
+                        var net = m.Income - m.Spending;
+                        running += net;
+                        <tr>
+                            <td class="nowrap"><a href="@($"transactions?month={m.Month:yyyy-MM}")">@m.Month.ToString("MMM yyyy")</a></td>
+                            <td class="num pos">@Money.Whole(m.Income)</td>
+                            <td class="num neg">@Money.Whole(m.Spending)</td>
+                            <td class="num @(net < 0 ? "neg" : "pos")">@Money.Whole(net)</td>
+                            <td class="num hide-sm">@(m.Income > 0 ? (net / m.Income).ToString("P0") : "–")</td>
+                            <td class="num hide-sm">@Money.Whole(running)</td>
+                        </tr>
+                    }
+                    </tbody>
+                    <tfoot>
+                        <tr class="total">
+                            <td>Total</td>
+                            <td class="num pos">@Money.Whole(cur.Income)</td>
+                            <td class="num neg">@Money.Whole(cur.Spending)</td>
+                            <td class="num @(cur.Net < 0 ? "neg" : "pos")">@Money.Whole(cur.Net)</td>
+                            <td class="num hide-sm">@(cur.SavingsRate is decimal tr ? tr.ToString("P0") : "–")</td>
+                            <td class="hide-sm"></td>
+                        </tr>
+                    </tfoot>
+                </table>
+            </div>
+        </details>
+    </section>
+}
+
+@* ---------- Where the money went ---------- *@
+@if (_pie.Count > 0)
+{
+    <section class="panel">
+        @if (cur.Net >= 0)
+        {
+            <h2>Where your income went <span class="muted small">· striped slice = kept</span></h2>
+        }
+        else
+        {
+            <h2>Where your spending went</h2>
+            <p class="error small">You spent @Money.Whole(-cur.Net) more than your @Money.Whole(cur.Income) income.</p>
+        }
+        <PieChart Slices="_pie" TotalTone="@(cur.Net >= 0 ? "pos" : "neg")" AriaLabel="@(cur.Net >= 0 ? "Share of income by category" : "Share of spending by category")" />
+    </section>
+}
+
+<div class="two-col">
+    <section class="panel">
+        <h2>Income sources</h2>
+        @if (_r.IncomeSources.Count == 0)
+        {
+            <p class="muted">No income in this period.</p>
+        }
+        else
+        {
+            <table class="table">
+                <tbody>
+                @foreach (var s in _r.IncomeSources.Take(6))
+                {
+                    <tr>
+                        <td><a href="@MerchantLink(s.Name)">@s.Name</a> <span class="muted small">· @s.Count</span></td>
+                        <td class="num pos">@Money.Whole(s.Amount)</td>
+                        <td class="barcell hide-sm"><div class="bar income" style="width:@Pct((double)(s.Amount / _r.IncomeSources[0].Amount))%"
+                             data-tip="@($"{s.Name}|{Money.Cents(s.Amount)} from {s.Count} deposit{(s.Count == 1 ? "" : "s")}|avg {Money.Cents(s.Amount / s.Count)} each")"></div></td>
+                    </tr>
+                }
+                </tbody>
+                <tfoot>
+                    <tr class="total">
+                        <td>Total@(_r.IncomeSources.Count > 6 ? $" (all {_r.IncomeSources.Count})" : "")</td>
+                        <td class="num pos">@Money.Whole(_r.IncomeSources.Sum(s => s.Amount))</td>
+                        <td class="hide-sm"></td>
+                    </tr>
+                </tfoot>
+            </table>
+        }
+    </section>
+    <section class="panel">
+        <h2>Recurring bills <span class="muted small">· last 6 months</span></h2>
+        @if (_r.Recurring.Count == 0)
+        {
+            <p class="muted">No steady monthly charges found yet.</p>
+        }
+        else
+        {
+            var totalRecurring = _r.Recurring.Sum(x => x.Monthly);
+            <table class="table">
+                <tbody>
+                @foreach (var x in _r.Recurring)
+                {
+                    <tr>
+                        <td><a href="@MerchantLink(x.Merchant)">@x.Merchant</a> <span class="muted small">· @x.Category</span></td>
+                        <td class="num nowrap neg">@Money.Whole(x.Monthly)<span class="muted small">/mo</span></td>
+                    </tr>
+                }
+                </tbody>
+                <tfoot>
+                    <tr class="total">
+                        <td>@_r.Recurring.Count bills@(cur.AvgIncome > 0 ? $" · {totalRecurring / cur.AvgIncome:P0} of income" : "")</td>
+                        <td class="num nowrap neg">@Money.Whole(totalRecurring)<span class="muted small">/mo</span></td>
+                    </tr>
+                </tfoot>
+            </table>
+        }
+    </section>
+</div>
+
+<div class="two-col">
+    <section class="panel">
+        <h2>Top companies</h2>
+        @if (_r.TopMerchants.Count == 0)
+        {
+            <p class="muted">No spending in this period.</p>
+        }
+        else
+        {
+            var top = _r.TopMerchants.Take(8).ToList();
+            <table class="table">
+                <tbody>
+                @foreach (var m in top)
+                {
+                    <tr>
+                        <td><a href="@MerchantLink(m.Name)"><span class="dot" style="background:@m.Color"></span>@m.Name</a></td>
+                        <td class="num neg">@Money.Whole(m.Amount)</td>
+                        <td class="barcell hide-sm"><div class="bar" style="width:@Pct((double)(m.Amount / top[0].Amount))%"
+                             data-tip="@($"{m.Name}|{Money.Cents(m.Amount)} over {m.Count} purchase{(m.Count == 1 ? "" : "s")}")"></div></td>
+                    </tr>
+                }
+                </tbody>
+                <tfoot>
+                    <tr class="total"><td>Total (top @top.Count)</td><td class="num neg">@Money.Whole(top.Sum(m => m.Amount))</td><td class="hide-sm"></td></tr>
+                </tfoot>
+            </table>
+        }
+    </section>
+    <section class="panel">
+        <h2>Largest expenses</h2>
+        @if (_r.LargestExpenses.Count == 0)
+        {
+            <p class="muted">No spending in this period.</p>
+        }
+        else
+        {
+            var big = _r.LargestExpenses.Take(8).ToList();
+            <table class="table">
+                <tbody>
+                @foreach (var t in big)
+                {
+                    <tr>
+                        <td><a href="@MerchantLink(t.Name)">@t.Name</a> <div class="muted small">@t.Date.ToString("MMM d") · @t.Category</div></td>
+                        <td class="num neg nowrap">@Money.Whole(-t.Amount)</td>
+                    </tr>
+                }
+                </tbody>
+                <tfoot>
+                    <tr class="total"><td>Total</td><td class="num neg nowrap">@Money.Whole(-big.Sum(t => t.Amount))</td></tr>
+                </tfoot>
+            </table>
+        }
+    </section>
+</div>
+
+
+@code {
+    private static readonly (string Key, string Label)[] Periods =
+    {
+        ("this", "This month"), ("3m", "3 months"), ("6m", "6 months"), ("ytd", "This year"), ("12m", "12 months"), ("all", "All"),
+    };
+
+    private string _period = "6m";
+    private string _prevLabel = "";
+    private CashFlowReport? _r;
+    private List<PieChart.Slice> _pie = new();
+
+    private List<DateTime> _monthOptions = new();
+    private List<AccountBalance> _balances = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        // Every month from the start of the (windowed) history to now, newest first.
+        var thisMonth = new DateTime(DateTime.Today.Year, DateTime.Today.Month, 1);
+        var start = await Window.StartAsync();
+        if (start is null)
+        {
+            var h = await Window.HistoriesAsync();
+            start = h.Count > 0 ? h.Min(x => x.First) : thisMonth;
+        }
+        for (var m = thisMonth; m >= new DateTime(start.Value.Year, start.Value.Month, 1); m = m.AddMonths(-1))
+            _monthOptions.Add(m);
+        _balances = await Reports.AccountBalancesAsync();
+        await Load(_period);
+    }
+
+    private Task PickMonth(string? value) => string.IsNullOrEmpty(value) ? Load("6m") : Load(value);
+
+    private async Task Load(string key)
+    {
+        _period = key;
+        var thisMonth = new DateTime(DateTime.Today.Year, DateTime.Today.Month, 1);
+        var end = thisMonth.AddMonths(1);
+        DateTime from;
+        if (key.StartsWith("m:") && DateTime.TryParseExact(key[2..], "yyyy-MM", null, System.Globalization.DateTimeStyles.None, out var picked))
+        {
+            from = picked;
+            end = picked.AddMonths(1);
+        }
+        else switch (key)
+        {
+            case "this": from = thisMonth; break;
+            case "3m": from = thisMonth.AddMonths(-2); break;
+            case "ytd": from = new DateTime(thisMonth.Year, 1, 1); break;
+            case "12m": from = thisMonth.AddMonths(-11); break;
+            case "all":
+                var h = await Window.HistoriesAsync();
+                from = h.Count > 0 ? h.Min(x => x.First) : thisMonth;
+                break;
+            default: from = thisMonth.AddMonths(-5); break;
+        }
+        _r = await Reports.CashFlowReportAsync(from, end);
+        var months = _r.Current.Months;
+        _prevLabel = key == "this" || key.StartsWith("m:")
+            ? from.AddMonths(-1).ToString("MMMM")
+            : $"previous {months} months";
+
+        // Top 6 categories, the rest folded into "Other", plus what was kept when income covered spending.
+        _pie = new();
+        foreach (var c in _r.SpendingByCategory.Take(6))
+            _pie.Add(new PieChart.Slice(c.Name, c.Color, c.Amount, Href: CatLink(c.CategoryId), Tone: "neg"));
+        var other = _r.SpendingByCategory.Skip(6).Sum(c => c.Amount);
+        if (other > 0) _pie.Add(new PieChart.Slice("Other", "#95a5a6", other, Tone: "neg"));
+        if (_r.Current.Net > 0) _pie.Add(new PieChart.Slice("Saved", "#1e8449", _r.Current.Net, Striped: true, Tone: "pos"));
+    }
+
+    // Links into Transactions carry the period being viewed, so they show the same dates as this page.
+    private string Range => _r is null ? "" : $"&from={_r.From:yyyy-MM-dd}&to={_r.ToExclusive.AddDays(-1):yyyy-MM-dd}";
+    private string CatLink(int? id) => $"transactions?category={(id?.ToString() ?? "none")}{Range}";
+    private string MerchantLink(string name) => $"transactions?merchant={Uri.EscapeDataString(name)}{Range}";
+    private static string Pct(double v) => Math.Max(0, v * 100).ToString("0.#", System.Globalization.CultureInfo.InvariantCulture);
+}

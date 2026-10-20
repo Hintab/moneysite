@@ -1,0 +1,304 @@
+@page "/networth"
+@inject ReportService Reports
+@inject IDbContextFactory<MoneyContext> DbFactory
+
+<PageTitle>Net Worth · Money Manager</PageTitle>
+<h1>Net Worth</h1>
+
+@if (_loading)
+{
+    <p class="muted">Loading…</p>
+    return;
+}
+
+@if (_balances.Count == 0)
+{
+    <div class="empty">
+        <p><b>No accounts yet.</b> Connect a bank or retirement account to see your net worth.</p>
+        <p><a class="btn" href="accounts">Connect an account</a></p>
+    </div>
+    return;
+}
+
+@* One card per account label (same labels as the Accounts page), all in one row on desktop. *@
+@{ var present = Groups.Where(g => _balances.Any(b => g.Match(b.Account.Type))).ToList(); }
+<div class="groups" style="--n:@present.Count">
+    @foreach (var g in present)
+    {
+        var rows = _balances.Where(b => g.Match(b.Account.Type)).OrderByDescending(b => Math.Abs(b.Value)).ToList();
+        var sum = rows.Sum(b => b.Value);
+        <section class="panel group-card">
+            <header>
+                <small>@g.Name</small>
+                <b class="@(sum < 0 ? "neg" : "")">@Money.Whole(Math.Abs(sum))@(sum < 0 ? " owed" : "")</b>
+            </header>
+            <ul>
+                @foreach (var b in rows)
+                {
+                    <li>
+                        <a href="@($"transactions?account={b.Account.Id}")" title="@($"{b.Account.Name} · {b.Account.Institution} · {Money.Cents(b.Value)}")">@b.Account.Name</a>
+                        <span class="@(b.Value < 0 ? "neg" : "")">@Money.Whole(b.Value)</span>
+                    </li>
+                }
+            </ul>
+        </section>
+    }
+</div>
+
+@* Net worth and its history in one card. *@
+<section class="panel nw-card">
+    <small class="muted">Net worth</small>
+    <span class="big">@Money.Whole(_netWorth)</span>
+    @if (_history.Count > 1)
+    {
+        var change = _netWorth - _history[0].Value;
+        <span class="delta">@(change >= 0 ? "▲" : "▼") @Money.Whole(Math.Abs(change)) since @_history[0].Date.ToString("MMM d, yyyy")
+            <span class="info" title="Plaid only reports today's balances. Earlier points are worked out backward from your transactions; retirement, investment and CD accounts have none, so their part stays at today's value until daily balances build up.">i</span></span>
+        <LineChart Points="_history" AriaLabel="Net worth over time" H="220" ZeroBased="false" />
+    }
+</section>
+
+@* Every account's balance and how it moved over the last 30 days. *@
+<section class="panel">
+    <h2>Balances <span class="muted small">· last @SummaryDays days</span>
+        <span class="info" title="Change is the effect on your net worth: green means it went up (more saved, or less owed on a card). In and out count every transaction, transfers included.">i</span></h2>
+    <table class="table bal-table">
+        <thead>
+            <tr>
+                <th>Account</th>
+                <th class="num">Balance</th>
+                <th class="num">Change</th>
+                <th class="num hide-sm">In</th>
+                <th class="num hide-sm">Out</th>
+                <th class="hide-sm">Trend</th>
+            </tr>
+        </thead>
+        <tbody>
+        @foreach (var s in _summaries)
+        {
+            var a = s.Account;
+            <tr>
+                <td>
+                    <a href="@($"transactions?account={a.Id}")">@a.Name</a>
+                    <div class="muted small">@a.Institution · @a.Type.Label()@(s.AsOf is DateTime d && d < DateTime.Today ? $" · balance from {d:MMM d}" : "")</div>
+                </td>
+                <td class="num nowrap">@Owed(s.Value)</td>
+                <td class="num nowrap">@Change(s.Change)</td>
+                <td class="num nowrap hide-sm">@if (s.In > 0) { <span class="pos">@Money.Whole(s.In)</span> } else { <span class="muted">–</span> }</td>
+                <td class="num nowrap hide-sm">@if (s.Out > 0) { <span class="neg">@Money.Whole(s.Out)</span> } else { <span class="muted">–</span> }</td>
+                <td class="hide-sm"><Sparkline Points="s.Trend" AriaLabel="@($"{a.Name} over the last {SummaryDays} days")" /></td>
+            </tr>
+        }
+        </tbody>
+        <tfoot>
+            <tr class="total">
+                <td>Net worth · @_summaries.Count account@(_summaries.Count == 1 ? "" : "s")</td>
+                <td class="num nowrap">@Owed(_summaries.Sum(s => s.Value))</td>
+                <td class="num nowrap">@Change(_summaries.Sum(s => s.Change ?? 0))</td>
+                <td class="num nowrap hide-sm"><span class="pos">@Money.Whole(_summaries.Sum(s => s.In))</span></td>
+                <td class="num nowrap hide-sm"><span class="neg">@Money.Whole(_summaries.Sum(s => s.Out))</span></td>
+                <td class="hide-sm"></td>
+            </tr>
+        </tfoot>
+    </table>
+    @if (_summaries.Any(s => s.Change is null))
+    {
+        <p class="muted small">– = not enough history yet to compare. The total change leaves those accounts out.</p>
+    }
+</section>
+
+@foreach (var inv in _investments)
+{
+    var anyCost = inv.Holdings.Any(h => h.CostBasis is not null);
+    var holdTotal = inv.Holdings.Sum(x => x.Value);
+    <section class="panel">
+        <h2>@inv.Account.Name <span class="muted small">· @inv.Account.Type.Label() · @inv.Account.Institution</span></h2>
+
+        <div class="cards compact">
+            <div class="card"><small>Value</small><b>@Money.Whole(inv.Value)</b>
+                <span class="delta">@(inv.AsOf is DateTime a ? $"as of {a:MMM d}" : "")</span></div>
+            <div class="card"><small>Contributed · 12 months</small><b>@Money.Whole(inv.Contributions12m)</b>
+                <span class="delta">@Money.Whole(inv.ContributionsYtd) this year</span></div>
+            @if (inv.UnrealizedGain is decimal ug)
+            {
+                <div class="card"><small>Gain</small><b class="@(ug < 0 ? "neg" : "pos")">@Money.Whole(ug)</b>
+                    <span class="delta">vs. what you paid@(inv.UncostedValue > 0 ? $" · excl. {Money.Whole(inv.UncostedValue)}" : "")</span></div>
+            }
+            else if (inv.Growth is decimal gr && inv.GrowthSince is DateTime gs)
+            {
+                <div class="card"><small>Growth since @gs.ToString("MMM d")</small><b class="@(gr < 0 ? "neg" : "pos")">@Money.Whole(gr)</b>
+                    <span class="delta">value change minus contributions</span></div>
+            }
+            else
+            {
+                <div class="card"><small>Gain</small><b>–</b><span class="delta">shows after a few daily syncs</span></div>
+            }
+            @if (inv.Dividends12m > 0)
+            {
+                <div class="card"><small>Dividends · 12 months</small><b class="pos">@Money.Whole(inv.Dividends12m)</b></div>
+            }
+        </div>
+
+        @if (inv.Holdings.Count == 0 && inv.Activity.Count == 0)
+        {
+            <p class="notice">Holdings and contributions aren't downloaded yet — on <a href="accounts">Accounts</a>, click
+                <b>Sync now</b> for @inv.Account.Institution, or <b>Enable investment tracking</b> if it asks.</p>
+        }
+
+        @if (inv.ValueHistory.Count > 1)
+        {
+            <h3>Value over time</h3>
+            <LineChart Points="inv.ValueHistory" AriaLabel="@($"{inv.Account.Name} value over time")" H="200" ZeroBased="false" />
+        }
+
+        @if (inv.ContributionsByMonth.Any(m => m.Amount > 0))
+        {
+            var cmax = Math.Max(1m, inv.ContributionsByMonth.Max(m => m.Amount));
+            <h3>Contributions by month</h3>
+            <div class="months12">
+                @foreach (var m in inv.ContributionsByMonth)
+                {
+                    <div class="wd" data-tip="@($"{m.Month:MMMM yyyy}|Contributed {Money.Cents(m.Amount)}")">
+                        <span class="wd-val">@(m.Amount > 0 ? Money.Short(m.Amount) : "")</span>
+                        <div class="wd-bar"><div style="height:@Pct((double)(m.Amount / cmax))%"></div></div>
+                        <span class="wd-lbl">@m.Month.ToString("MMM")</span>
+                    </div>
+                }
+            </div>
+        }
+
+        @if (inv.Holdings.Count > 0)
+        {
+            <h3>Holdings</h3>
+            <table class="table">
+                <thead>
+                    <tr><th>Fund</th><th class="num">Value</th><th class="num hide-sm">Share</th>
+                        @if (anyCost)
+                        {
+                            <th class="num">Gain</th>
+                        }
+                    </tr>
+                </thead>
+                <tbody>
+                @foreach (var h in inv.Holdings)
+                {
+                    <tr>
+                        <td>@h.Name
+                            <div class="muted small">@(string.IsNullOrEmpty(h.Ticker) ? "" : h.Ticker + " · ")@h.Quantity.ToString("N3") sh @@ @Money.Cents(h.Price)</div></td>
+                        <td class="num nowrap">@Money.Whole(h.Value)</td>
+                        <td class="num hide-sm">@(holdTotal > 0 ? (h.Value / holdTotal).ToString("P0") : "–")</td>
+                        @if (anyCost)
+                        {
+                            <td class="num nowrap @(h.CostBasis is decimal c2 && h.Value < c2 ? "neg" : "pos")">@(h.CostBasis is decimal c3 ? Money.Whole(h.Value - c3) : "–")</td>
+                        }
+                    </tr>
+                }
+                </tbody>
+                <tfoot>
+                    <tr class="total">
+                        <td>Total · @inv.Holdings.Count fund@(inv.Holdings.Count == 1 ? "" : "s")</td>
+                        <td class="num nowrap">@Money.Whole(holdTotal)</td>
+                        <td class="num hide-sm">100%</td>
+                        @if (anyCost)
+                        {
+                            var gain = inv.Holdings.Where(h => h.CostBasis is not null).Sum(h => h.Value - h.CostBasis!.Value);
+                            <td class="num nowrap @(gain < 0 ? "neg" : "pos")">@Money.Whole(gain)</td>
+                        }
+                    </tr>
+                </tfoot>
+            </table>
+        }
+
+        @if (inv.Activity.Count > 0)
+        {
+            var shown = _showAll.Contains(inv.Account.Id) ? inv.Activity : inv.Activity.Take(15).ToList();
+            <details>
+                <summary>Activity (@inv.Activity.Count)</summary>
+                <table class="table">
+                    <tbody>
+                    @foreach (var t in shown)
+                    {
+                        <tr>
+                            <td class="nowrap muted small">@t.Date.ToString("MMM d")</td>
+                            <td>@Label(t)<div class="muted small">@(t.Security ?? t.Name)</div></td>
+                            <td class="num nowrap">@Money.Cents(Math.Abs(t.Amount))</td>
+                        </tr>
+                    }
+                    </tbody>
+                    <tfoot>
+                        <tr class="total">
+                            <td colspan="2">Contributions shown</td>
+                            <td class="num nowrap">@Money.Cents(shown.Where(t => t.IsContribution).Sum(t => Math.Abs(t.Amount)))</td>
+                        </tr>
+                    </tfoot>
+                </table>
+                @if (inv.Activity.Count > shown.Count)
+                {
+                    <button class="btn secondary" @onclick="() => _showAll.Add(inv.Account.Id)">Show all @inv.Activity.Count</button>
+                }
+            </details>
+        }
+    </section>
+}
+
+@code {
+    private record Group(string Name, Func<AccountType, bool> Match);
+    private static readonly Group[] Groups =
+    {
+        // Same labels as the Accounts page, in the same order.
+        new("Checking", t => t == AccountType.Checking),
+        new("Savings", t => t == AccountType.Savings),
+        new("CDs", t => t == AccountType.CD),
+        new("Retirement", t => t == AccountType.Retirement),
+        new("Investments", t => t == AccountType.Investment),
+        new("Credit cards", t => t == AccountType.CreditCard),
+        new("Loans", t => t == AccountType.Loan),
+        new("Other", t => t == AccountType.Other),
+    };
+
+    private bool _loading = true;
+    private decimal _netWorth;
+    private List<AccountBalance> _balances = new();
+    private List<ChartPoint> _history = new();
+    private const int SummaryDays = 30;
+    private List<AccountSummary> _summaries = new();
+    private List<InvestmentReport> _investments = new();
+    private readonly HashSet<int> _showAll = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        _balances = await Reports.AccountBalancesAsync();
+        _netWorth = _balances.Sum(b => b.Value);
+        _history = await Reports.NetWorthHistoryAsync();
+        // Same order as the group cards: by label, then biggest first.
+        _summaries = (await Reports.AccountSummariesAsync(SummaryDays))
+            .OrderBy(s => Array.FindIndex(Groups, g => g.Match(s.Account.Type)))
+            .ThenByDescending(s => Math.Abs(s.Value)).ToList();
+        // Retirement accounts first, then other investments — same order as the groups above.
+        _investments = (await Reports.InvestmentsAsync())
+            .OrderBy(i => i.Account.Type == AccountType.Retirement ? 0 : 1).ThenByDescending(i => i.Value).ToList();
+        _loading = false;
+    }
+
+    // Plaid's type/subtype → plain words, e.g. "cash/contribution" → "Contribution".
+    private static string Label(ActivityRow t)
+    {
+        var s = string.IsNullOrWhiteSpace(t.Subtype) ? t.Type : t.Subtype;
+        return s.Length == 0 ? "Activity" : char.ToUpperInvariant(s[0]) + s[1..];
+    }
+
+    // A negative balance is money owed (credit cards, loans).
+    private static RenderFragment Owed(decimal v) => v < 0
+        ? @<span class="neg">@Money.Whole(-v) <span class="small">owed</span></span>
+        : @<span>@Money.Whole(v)</span>;
+
+    private static RenderFragment Change(decimal? c) => c switch
+    {
+        null => @<span class="muted">–</span>,
+        0 => @<span class="muted">$0</span>,
+        > 0 => @<span class="pos">▲ @Money.Whole(c.Value)</span>,
+        _ => @<span class="neg">▼ @Money.Whole(-c.Value)</span>,
+    };
+
+    private static string Pct(double v) => Math.Max(0, v * 100).ToString("0.#", System.Globalization.CultureInfo.InvariantCulture);
+}

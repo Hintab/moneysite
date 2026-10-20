@@ -1,0 +1,285 @@
+@page "/merchants"
+@inject MerchantService MerchantSvc
+@inject Categorizer Categorizer
+@inject IDbContextFactory<MoneyContext> DbFactory
+
+<PageTitle>Merchants · Money Manager</PageTitle>
+<h1>Merchants</h1>
+<p class="subtitle">Tick two or more to combine them, ✎ to rename. Picking a category adds the name to that category's keywords.</p>
+
+<div class="filters">
+    <input class="input grow" type="search" placeholder="Search merchants…" @bind="_q" @bind:event="oninput" />
+    <select class="m-only" value="@_sort" @onchange="@(e => Sort(e.Value?.ToString() ?? "spent"))" aria-label="Sort">
+        <option value="spent">Most spent</option>
+        <option value="name">Name A–Z</option>
+        <option value="count">Most transactions</option>
+        <option value="last">Most recent</option>
+    </select>
+    <button class="btn @(_needsOnly ? "" : "secondary")" @onclick="() => _needsOnly = !_needsOnly"
+            title="Companies with transactions that ended up Uncategorized">
+        Needs a category (@_all.Count(m => m.Uncategorized > 0))
+    </button>
+    <div class="seg" role="group" aria-label="Period">
+        @foreach (var p in Periods)
+        {
+            <button class="@(p.Key == _period ? "on" : "")" @onclick="() => SetPeriod(p.Key)">@p.Label</button>
+        }
+    </div>
+</div>
+
+@if (!string.IsNullOrEmpty(_msg))
+{
+    <p class="msg">@_msg</p>
+}
+
+@if (_selected.Count > 0)
+{
+    <div class="notice sticky">
+        <b>@_selected.Count selected.</b>
+        @if (_selected.Count >= 2)
+        {
+            <span>Combine into</span>
+            <input class="input" @bind="_combineName" style="width:14rem" aria-label="Combined name" />
+            <button class="btn" @onclick="Combine" disabled="@_busy">Combine</button>
+        }
+        else
+        {
+            <span class="muted">Select another to combine them.</span>
+        }
+        <button class="btn secondary" @onclick="ClearSelection">Clear</button>
+    </div>
+}
+
+@{ var rows = Visible(); }
+
+<section class="panel">
+<div class="scroll-x">
+    <table class="table mx-table">
+        <thead>
+            <tr>
+                <th class="check"></th>
+                <SortTh Key="name" Label="Merchant" Current="@_sort" Desc="_desc" OnSort="Sort" />
+                <SortTh Key="category" Label="Category" Current="@_sort" Desc="_desc" OnSort="Sort" />
+                <SortTh Key="count" Label="#" Current="@_sort" Desc="_desc" OnSort="Sort" Class="num hide-sm" />
+                <SortTh Key="spent" Label="Spent" Current="@_sort" Desc="_desc" OnSort="Sort" Class="num" />
+                <SortTh Key="received" Label="Received" Current="@_sort" Desc="_desc" OnSort="Sort" Class="num hide-sm" />
+                <SortTh Key="last" Label="Last" Current="@_sort" Desc="_desc" OnSort="Sort" Class="num hide-sm" />
+            </tr>
+        </thead>
+        <tbody>
+        @foreach (var m in rows.Take(_limit))
+        {
+            var isSel = _selected.Contains(m.Name);
+            <tr class="@(isSel ? "selected" : "")">
+                <td class="check"><input type="checkbox" checked="@isSel" @onchange="e => Toggle(m, e)" aria-label="Select @m.Name" /></td>
+                <td class="c-name">
+                    @if (_renaming == m.Name)
+                    {
+                        <input class="input" @bind="_renameTo" aria-label="New name" />
+                        <button class="btn" @onclick="() => Rename(m.Name)" disabled="@_busy">Save</button>
+                        <button class="btn secondary" @onclick="() => _renaming = null">Cancel</button>
+                    }
+                    else
+                    {
+                        <a href="@TxLink(m.Name)">@m.Name</a>
+                        <button class="icon" title="Rename" @onclick="() => StartRename(m.Name)">✎</button>
+                    }
+                </td>
+                <td class="c-cat">
+                    @{ var shown = ChosenCategory(m) ?? m.CategoryId; }
+                    <select class="cat" style="--cat:@ColorOf(m)"
+                            value="@(shown?.ToString() ?? "")" @onchange="e => SetCategory(m, e.Value?.ToString())"
+                            aria-label="Category for @m.Name">
+                        @if (shown is null)
+                        {
+                            <option value="">—</option>
+                        }
+                        @foreach (var c in _cats)
+                        {
+                            <option value="@c.Id">@c.Name</option>
+                        }
+                    </select>
+                    @if (m.Uncategorized > 0)
+                    {
+                        <div class="muted small">@m.Uncategorized uncategorized</div>
+                    }
+                </td>
+                <td class="num hide-sm">@m.Count</td>
+                <td class="num c-spent neg">@(m.Spent > 0 ? Money.Cents(m.Spent) : "")</td>
+                <td class="num pos hide-sm">@(m.Received > 0 ? Money.Cents(m.Received) : "")</td>
+                <td class="num nowrap hide-sm">@m.Last.ToString("MMM d, yyyy")</td>
+            </tr>
+        }
+        </tbody>
+        @if (rows.Count > 0)
+        {
+            <tfoot>
+                <tr class="total">
+                    <td></td>
+                    <td colspan="2" class="c-name">Total · @rows.Count merchant@(rows.Count == 1 ? "" : "s")@(rows.Count > _limit ? " (including ones not shown yet)" : "")</td>
+                    <td class="num hide-sm">@rows.Sum(r => r.Count)</td>
+                    <td class="num c-spent neg">@Money.Cents(rows.Sum(r => r.Spent))</td>
+                    <td class="num pos hide-sm">@Money.Cents(rows.Sum(r => r.Received))</td>
+                    <td class="hide-sm"></td>
+                </tr>
+            </tfoot>
+        }
+    </table>
+</div>
+</section>
+@if (rows.Count > _limit)
+{
+    <button class="btn secondary" @onclick="() => _limit += 100">Show more (@(rows.Count - _limit) left)</button>
+}
+
+@code {
+    private static readonly (string Key, string Label)[] Periods =
+    {
+        ("all", "All time"), ("12m", "Last 12 months"), ("ytd", "This year"), ("3m", "Last 3 months"), ("this", "This month"),
+    };
+
+    private List<MerchantSummary> _all = new();
+    private List<Category> _cats = new();
+    private readonly HashSet<string> _selected = new();
+    private string _q = "", _period = "all", _sort = "spent", _msg = "", _combineName = "", _renameTo = "";
+    private string? _renaming;
+    private bool _desc = true, _busy;
+    private int _limit = 100;
+    private (DateTime? From, DateTime? To) _range;
+
+    // Links into Transactions carry the period picked here.
+    private string TxLink(string merchant) =>
+        $"transactions?merchant={Uri.EscapeDataString(merchant)}" +
+        (_range.From is DateTime f ? $"&from={f:yyyy-MM-dd}" : "") +
+        (_range.To is DateTime t ? $"&to={t.AddDays(-1):yyyy-MM-dd}" : "");
+
+    protected override async Task OnInitializedAsync()
+    {
+        await using (var db = await DbFactory.CreateDbContextAsync())
+            _cats = await db.Categories.AsNoTracking().OrderBy(c => c.Name).ToListAsync();
+        await Load();
+    }
+
+    private async Task Load()
+    {
+        var thisMonth = new DateTime(DateTime.Today.Year, DateTime.Today.Month, 1);
+        (DateTime? From, DateTime? To) range = _period switch
+        {
+            "12m" => (thisMonth.AddMonths(-11), thisMonth.AddMonths(1)),
+            "ytd" => (new DateTime(thisMonth.Year, 1, 1), thisMonth.AddMonths(1)),
+            "3m" => (thisMonth.AddMonths(-2), thisMonth.AddMonths(1)),
+            "this" => (thisMonth, thisMonth.AddMonths(1)),
+            _ => (null, null),
+        };
+        _range = range;
+        _all = await MerchantSvc.ListAsync(range.From, range.To);
+        // Most specific first, the same way the categorizer picks between matching keywords.
+        _keywords = (await Categorizer.KeywordCategoriesAsync())
+            .Select(kv => (Keyword: kv.Key, CategoryId: kv.Value, Pattern: Categorizer.KeywordRegex(kv.Key)))
+            .OrderByDescending(k => k.Keyword.Length)
+            .ToList();
+        _selected.IntersectWith(_all.Select(m => m.Name));
+    }
+
+    private List<MerchantSummary> Visible()
+    {
+        IEnumerable<MerchantSummary> rows = _all;
+        if (_needsOnly) rows = rows.Where(m => m.Uncategorized > 0);
+        if (!string.IsNullOrWhiteSpace(_q))
+            rows = rows.Where(m => m.Name.Contains(_q.Trim(), StringComparison.OrdinalIgnoreCase));
+        Func<MerchantSummary, object> key = _sort switch
+        {
+            "name" => m => m.Name.ToLowerInvariant(),
+            "category" => m => (_cats.FirstOrDefault(c => c.Id == ChosenCategory(m))?.Name ?? m.TopCategory ?? "").ToLowerInvariant(),
+            "count" => m => m.Count,
+            "received" => m => m.Received,
+            "last" => m => m.Last,
+            _ => m => m.Spent,
+        };
+        return (_desc ? rows.OrderByDescending(key) : rows.OrderBy(key)).ThenBy(m => m.Name).ToList();
+    }
+
+    private void Sort(string key)
+    {
+        if (_sort == key) _desc = !_desc;
+        else { _sort = key; _desc = key is "spent" or "received" or "count" or "last"; }
+    }
+
+    private async Task SetPeriod(string key)
+    {
+        _period = key;
+        _limit = 100;
+        await Load();
+    }
+
+    private List<(string Keyword, int CategoryId, System.Text.RegularExpressions.Regex Pattern)> _keywords = new();
+    private bool _needsOnly;
+
+    /// The keyword that matches this company's name, if any.
+    private (string Keyword, int CategoryId)? KeywordMatch(MerchantSummary m)
+    {
+        foreach (var k in _keywords)
+            if (k.Pattern.IsMatch(m.Name)) return (k.Keyword, k.CategoryId);
+        return null;
+    }
+
+    /// The category this company was put in: its name as a keyword, or an older per-company setting.
+    private int? ChosenCategory(MerchantSummary m) => KeywordMatch(m)?.CategoryId ?? m.FixedCategoryId;
+
+    private string ColorOf(MerchantSummary m) =>
+        (ChosenCategory(m) is int id ? _cats.FirstOrDefault(c => c.Id == id)?.Color : m.TopCategoryColor) ?? "transparent";
+
+    private void Toggle(MerchantSummary m, ChangeEventArgs e)
+    {
+        if (e.Value is true) _selected.Add(m.Name); else _selected.Remove(m.Name);
+        // Suggest the busiest selected company's name.
+        _combineName = _all.Where(x => _selected.Contains(x.Name)).OrderByDescending(x => x.Count).FirstOrDefault()?.Name ?? "";
+    }
+
+    private void ClearSelection()
+    {
+        _selected.Clear();
+        _combineName = "";
+    }
+
+    private async Task Combine()
+    {
+        if (_selected.Count < 2 || string.IsNullOrWhiteSpace(_combineName)) return;
+        _busy = true;
+        var names = _selected.ToList();
+        var name = await MerchantSvc.CombineAsync(names, _combineName);
+        _msg = $"Combined {names.Count} merchants into \"{name}\".";
+        ClearSelection();
+        await Load();
+        _busy = false;
+    }
+
+    private void StartRename(string name)
+    {
+        _renaming = name;
+        _renameTo = name;
+    }
+
+    private async Task Rename(string name)
+    {
+        if (string.IsNullOrWhiteSpace(_renameTo) || _renameTo.Trim() == name) { _renaming = null; return; }
+        _busy = true;
+        var newName = await MerchantSvc.CombineAsync(new[] { name }, _renameTo);
+        _msg = $"Renamed \"{name}\" to \"{newName}\".";
+        _renaming = null;
+        await Load();
+        _busy = false;
+    }
+
+    private async Task SetCategory(MerchantSummary m, string? value)
+    {
+        if (!int.TryParse(value, out var id)) return;
+        // Reuse the keyword already putting it somewhere (e.g. "santander" for "Santander Billpay"),
+        // so it moves to the new category instead of leaving a stray duplicate behind.
+        var keyword = KeywordMatch(m)?.Keyword ?? Categorizer.KeywordFor(m.Name);
+        var changed = await Categorizer.AddKeywordAsync(keyword, id, m.Name);
+        _msg = $"Added \"{keyword}\" to the {_cats.First(c => c.Id == id).Name} keywords. " +
+               $"{changed} transaction{(changed == 1 ? "" : "s")} re-categorized (ones you set by hand are kept).";
+        await Load();
+    }
+}

@@ -1,0 +1,25 @@
+services:
+  moneysite:
+    # "." = the folder holding this file, the Dockerfile and MoneySite/. In Unraid's
+    # Compose Manager, change it to the absolute path of that folder on the server.
+    build: .
+    image: moneysite:latest
+    container_name: moneysite
+    ports:
+      # Reachable from every device on the home network at http://<server-ip>:8080.
+      # The app has NO login: anyone who can reach it can see every transaction and
+      # disconnect banks. NEVER port-forward this on your router or expose it to the
+      # internet. For access away from home, use a VPN (e.g. Tailscale).
+      # To make it reachable from the server only, use "127.0.0.1:8080:8080" instead.
+      - "8080:8080"
+    # Plaid keys and TZ come from .env (copy .env.example to .env and fill it in).
+    # The container runs as Production, which does not load dotnet user-secrets.
+    env_file:
+      - .env
+    environment:
+      MONEYSITE_DB_PATH: /data/money.db
+    volumes:
+      # Unraid appdata convention. The folder must be owned by UID 1654 (the image's
+      # non-root "app" user); see DOCKER.md.
+      - /mnt/user/appdata/moneysite:/data
+    restart: unless-stopped

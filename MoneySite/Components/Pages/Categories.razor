@@ -1,0 +1,262 @@
+@page "/categories"
+@inject IDbContextFactory<MoneyContext> DbFactory
+@inject Categorizer Categorizer
+@inject DataWindow Window
+
+<PageTitle>Categories · Money Manager</PageTitle>
+<h1>Categories &amp; rules</h1>
+<p class="subtitle">Keywords decide each transaction's category; Plaid's own label fills in the rest.</p>
+
+@if (!string.IsNullOrEmpty(_msg))
+{
+    <p class="msg">@_msg</p>
+}
+
+<section class="panel">
+    <h2>Keyword rules</h2>
+    <p class="muted small">Separate keywords with semicolons. A keyword matches the start of a word in the
+        description, ignoring case — "rent" matches "RENT PAYMENT" but not "current".</p>
+    <div class="scroll-x">
+    <table class="table">
+        <thead><tr><th style="width:5.5rem">Order</th><th>Keywords</th><th>Category</th><th></th></tr></thead>
+        <tbody>
+        @for (var i = 0; i < _rules.Count; i++)
+        {
+            var r = _rules[i];
+            var idx = i;
+            <tr>
+                <td class="nowrap">
+                    <button class="icon" title="Move up" disabled="@(idx == 0)" @onclick="() => Move(idx, -1)">↑</button>
+                    <button class="icon" title="Move down" disabled="@(idx == _rules.Count - 1)" @onclick="() => Move(idx, 1)">↓</button>
+                </td>
+                <td><input class="input wide" value="@r.Keywords" @onchange="e => SaveKeywords(r, e.Value?.ToString())" aria-label="Keywords" /></td>
+                <td>
+                    <select value="@r.CategoryId" @onchange="e => SaveRuleCategory(r, e.Value?.ToString())" aria-label="Category">
+                        @foreach (var c in _cats)
+                        {
+                            <option value="@c.Id">@c.Name</option>
+                        }
+                    </select>
+                </td>
+                <td class="num"><button class="icon danger" title="Delete rule" @onclick="() => DeleteRule(r)">✕</button></td>
+            </tr>
+        }
+        </tbody>
+    </table>
+</div>
+    <div class="row">
+        <input class="input wide" placeholder="New keywords, e.g. planet fitness; ymca" @bind="_newKeywords" />
+        <select @bind="_newRuleCat" aria-label="Category">
+            @foreach (var c in _cats)
+            {
+                <option value="@c.Id">@c.Name</option>
+            }
+        </select>
+        <button class="btn" @onclick="AddRule">Add rule</button>
+    </div>
+    <div class="row">
+        <button class="btn secondary" @onclick="Reapply" disabled="@_busy">Re-apply rules to all transactions</button>
+        <span class="muted small">Keeps categories you picked by hand.</span>
+    </div>
+</section>
+
+<section class="panel">
+    <h2>Categories
+        @if (_windowStart is not null)
+        {
+            <span class="muted small">· transactions since @_windowStart.Value.ToString("MMM d, yyyy")
+                <span class="info" title="The history window on the Accounts page is on, so older transactions are hidden everywhere. Turn it off there to count them.">i</span></span>
+        }
+    </h2>
+    <div class="scroll-x">
+    <table class="table">
+        <thead><tr><th>Color</th><th>Name</th><th class="num">Transactions</th><th></th></tr></thead>
+        <tbody>
+        @foreach (var c in _cats)
+        {
+            var special = IsSpecial(c);
+            <tr>
+                <td><input type="color" value="@c.Color" @onchange="e => SaveColor(c, e.Value?.ToString())" aria-label="Color for @c.Name" /></td>
+                <td>
+                    @if (special)
+                    {
+                        @c.Name <span class="muted small">(built-in@(c.Name == DbSeed.Ignore ? " · left out of all reports" : ""))</span>
+                    }
+                    else
+                    {
+                        <input class="input" value="@c.Name" @onchange="e => Rename(c, e.Value?.ToString())" aria-label="Name" />
+                    }
+                </td>
+                <td class="num"><a href="transactions?category=@c.Id">@_counts.GetValueOrDefault(c.Id)</a></td>
+                <td class="num">
+                    @if (!special)
+                    {
+                        @if (_confirmDelete == c.Id)
+                        {
+                            <span class="small">Its transactions become uncategorized.</span>
+                            <button class="btn danger" @onclick="() => DeleteCategory(c)">Delete</button>
+                            <button class="btn secondary" @onclick="() => _confirmDelete = null">Cancel</button>
+                        }
+                        else
+                        {
+                            <button class="icon danger" title="Delete category" @onclick="() => _confirmDelete = c.Id">✕</button>
+                        }
+                    }
+                </td>
+            </tr>
+        }
+        </tbody>
+    </table>
+</div>
+    <div class="row">
+        <input type="color" @bind="_newColor" aria-label="New category color" />
+        <input class="input" placeholder="New category name" @bind="_newName" />
+        <button class="btn" @onclick="AddCategory">Add category</button>
+    </div>
+</section>
+
+@code {
+    private List<Category> _cats = new();
+    private List<CategorizationRule> _rules = new();
+    private Dictionary<int, int> _counts = new();
+    private DateTime? _windowStart;
+    private string _msg = "";
+    private bool _busy;
+    private int? _confirmDelete;
+    private string _newKeywords = "", _newName = "", _newColor = "#2a78d6";
+    private int _newRuleCat;
+
+    protected override async Task OnInitializedAsync() => await Load();
+
+    private async Task Load()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        _cats = await db.Categories.AsNoTracking().OrderBy(c => c.Name).ToListAsync();
+        _rules = await db.CategorizationRules.AsNoTracking().OrderBy(r => r.Order).ThenBy(r => r.Id).ToListAsync();
+        // Same dates as the Transactions page, so a count always matches the list its link opens.
+        _windowStart = await Window.StartAsync();
+        var since = _windowStart ?? DateTime.MinValue;
+        _counts = await db.Transactions.Where(t => t.CategoryId != null && t.Date >= since).GroupBy(t => t.CategoryId!.Value)
+            .Select(g => new { g.Key, N = g.Count() }).ToDictionaryAsync(x => x.Key, x => x.N);
+        if (_newRuleCat == 0) _newRuleCat = _cats.FirstOrDefault()?.Id ?? 0;
+    }
+
+    private static bool IsSpecial(Category c) =>
+        c.Name is DbSeed.Transfer or DbSeed.Income or DbSeed.Uncategorized or DbSeed.CardPayment or DbSeed.Ignore;
+
+    private async Task Update(Func<MoneyContext, Task> change, string message)
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        await change(db);
+        _msg = message;
+        await Load();
+    }
+
+    private Task SaveKeywords(CategorizationRule r, string? value)
+    {
+        var kw = string.Join(";", (value ?? "").Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+        if (kw.Length == 0) { _msg = "A rule needs at least one keyword — use ✕ to delete it instead."; return Task.CompletedTask; }
+        return Update(db => db.CategorizationRules.Where(x => x.Id == r.Id)
+            .ExecuteUpdateAsync(s => s.SetProperty(x => x.Keywords, kw)), "Rule saved. Use \"Re-apply rules\" to update existing transactions.");
+    }
+
+    private Task SaveRuleCategory(CategorizationRule r, string? value) =>
+        int.TryParse(value, out var id)
+            ? Update(db => db.CategorizationRules.Where(x => x.Id == r.Id)
+                .ExecuteUpdateAsync(s => s.SetProperty(x => x.CategoryId, id)), "Rule saved. Use \"Re-apply rules\" to update existing transactions.")
+            : Task.CompletedTask;
+
+    private Task DeleteRule(CategorizationRule r) =>
+        Update(db => db.CategorizationRules.Where(x => x.Id == r.Id).ExecuteDeleteAsync(), "Rule deleted.");
+
+    private async Task Move(int index, int delta)
+    {
+        var other = index + delta;
+        if (other < 0 || other >= _rules.Count) return;
+        var order = _rules.Select(r => r.Id).ToList();
+        (order[index], order[other]) = (order[other], order[index]);
+        await using var db = await DbFactory.CreateDbContextAsync();
+        var rules = await db.CategorizationRules.ToDictionaryAsync(r => r.Id);
+        for (var i = 0; i < order.Count; i++) rules[order[i]].Order = i + 1;
+        await db.SaveChangesAsync();
+        _msg = "";
+        await Load();
+    }
+
+    private async Task AddRule()
+    {
+        var kw = string.Join(";", _newKeywords.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)).ToLowerInvariant();
+        if (kw.Length == 0 || _newRuleCat == 0) return;
+        await using (var db = await DbFactory.CreateDbContextAsync())
+        {
+            var first = await db.CategorizationRules.Select(r => (int?)r.Order).MinAsync() ?? 1;
+            db.CategorizationRules.Add(new CategorizationRule { Keywords = kw, CategoryId = _newRuleCat, Order = first - 1 });
+            await db.SaveChangesAsync();
+        }
+        _newKeywords = "";
+        var changed = await Categorizer.CategorizeAsync(reapplyAll: true);
+        _msg = $"Rule added at the top of the list. {changed} transaction{(changed == 1 ? "" : "s")} re-categorized.";
+        await Load();
+    }
+
+    private async Task Reapply()
+    {
+        _busy = true;
+        var changed = await Categorizer.CategorizeAsync(reapplyAll: true);
+        _busy = false;
+        _msg = $"Rules re-applied. {changed} transaction{(changed == 1 ? "" : "s")} changed category.";
+        await Load();
+    }
+
+    private Task SaveColor(Category c, string? color) =>
+        color is { Length: 7 } && color[0] == '#'
+            ? Update(db => db.Categories.Where(x => x.Id == c.Id).ExecuteUpdateAsync(s => s.SetProperty(x => x.Color, color)), "Color saved.")
+            : Task.CompletedTask;
+
+    private async Task Rename(Category c, string? name)
+    {
+        name = name?.Trim() ?? "";
+        if (name.Length == 0 || name == c.Name) return;
+        if (_cats.Any(x => x.Id != c.Id && x.Name.Equals(name, StringComparison.OrdinalIgnoreCase)))
+        {
+            _msg = $"There's already a category called \"{name}\".";
+            return;
+        }
+        await Update(db => db.Categories.Where(x => x.Id == c.Id).ExecuteUpdateAsync(s => s.SetProperty(x => x.Name, name)), "Category renamed.");
+    }
+
+    private async Task AddCategory()
+    {
+        var name = _newName.Trim();
+        if (name.Length == 0) return;
+        if (_cats.Any(x => x.Name.Equals(name, StringComparison.OrdinalIgnoreCase)))
+        {
+            _msg = $"There's already a category called \"{name}\".";
+            return;
+        }
+        await using (var db = await DbFactory.CreateDbContextAsync())
+        {
+            db.Categories.Add(new Category { Name = name, Color = _newColor });
+            await db.SaveChangesAsync();
+        }
+        _newName = "";
+        _msg = $"Added \"{name}\". Add a keyword rule above to fill it automatically.";
+        await Load();
+    }
+
+    private async Task DeleteCategory(Category c)
+    {
+        _confirmDelete = null;
+        await using (var db = await DbFactory.CreateDbContextAsync())
+        {
+            // Rules for it are deleted by cascade; its transactions get re-categorized.
+            await db.Transactions.Where(t => t.CategoryId == c.Id)
+                .ExecuteUpdateAsync(s => s.SetProperty(t => t.CategoryId, (int?)null).SetProperty(t => t.CategoryManual, false));
+            await db.CategorizationRules.Where(r => r.CategoryId == c.Id).ExecuteDeleteAsync();
+            await db.Categories.Where(x => x.Id == c.Id).ExecuteDeleteAsync();
+        }
+        await Categorizer.CategorizeAsync();
+        _msg = $"Deleted \"{c.Name}\".";
+        await Load();
+    }
+}

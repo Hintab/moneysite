@@ -1,0 +1,86 @@
+@implements IDisposable
+@inject NavigationManager Nav
+
+@* Wide screens: sidebar (icon rail on medium widths like a Fold's inner screen).
+   Narrow screens: bottom tab bar with the four main pages and a "More" sheet. *@
+
+<aside class="sidenav" aria-label="Main">
+    <div class="brand">
+        <span class="logo" aria-hidden="true">$</span>
+        <span class="brand-name">Money Manager</span>
+    </div>
+    @foreach (var item in Items)
+    {
+        <NavLink class="side-link" href="@item.Href" Match="@(item.Href == "" ? NavLinkMatch.All : NavLinkMatch.Prefix)" title="@item.Label">
+            <Icon Path="@item.Icon" />
+            <span>@item.Label</span>
+        </NavLink>
+    }
+</aside>
+
+<nav class="tabbar" aria-label="Main">
+    @foreach (var item in Items.Where(i => i.Tab))
+    {
+        <NavLink class="tab" href="@item.Href" Match="@(item.Href == "" ? NavLinkMatch.All : NavLinkMatch.Prefix)">
+            <Icon Path="@item.Icon" />
+            <span>@item.Short</span>
+        </NavLink>
+    }
+    <button type="button" class="tab @(InMore ? "active" : "")" @onclick="() => _moreOpen = !_moreOpen" aria-expanded="@_moreOpen">
+        <Icon Path="@MoreIcon" />
+        <span>More</span>
+    </button>
+</nav>
+
+@if (_moreOpen)
+{
+    <div class="sheet-backdrop" @onclick="() => _moreOpen = false"></div>
+    <div class="sheet" role="dialog" aria-label="More pages">
+        <div class="sheet-handle"></div>
+        @foreach (var item in Items.Where(i => !i.Tab))
+        {
+            <NavLink class="sheet-link" href="@item.Href" @onclick="() => _moreOpen = false">
+                <Icon Path="@item.Icon" />
+                <span>@item.Label</span>
+            </NavLink>
+        }
+    </div>
+}
+
+@code {
+    private record Item(string Href, string Label, string Short, string Icon, bool Tab);
+
+    private const string MoreIcon = "M5 12h.01M12 12h.01M19 12h.01";
+
+    private static readonly Item[] Items =
+    {
+        new("", "Income vs Spending", "Cash flow", "M4 20V11M10 20V5M16 20v-8M22 20H2", true),
+        new("networth", "Net Worth", "Net worth", "M3 17l6-6 4 4 8-8M15 7h6v6", true),
+        new("transactions", "Transactions", "Activity", "M8 6h13M8 12h13M8 18h13M3.5 6h.01M3.5 12h.01M3.5 18h.01", true),
+        new("cards", "Credit cards", "Cards", "M3 6.5A1.5 1.5 0 0 1 4.5 5h15A1.5 1.5 0 0 1 21 6.5v11a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5zM3 10h18M7 15h3", true),
+        new("merchants", "Merchants", "Merchants", "M4 9l1.2-5h13.6L20 9M5 9v11h14V9M10 20v-5h4v5M4 9h16", false),
+        new("categories", "Categories", "Categories", "M20 13.5l-6.5 6.5a2 2 0 0 1-2.8 0L4 13.3V4h9.3l6.7 6.7a2 2 0 0 1 0 2.8zM8.5 8.5h.01", false),
+        new("accounts", "Accounts", "Accounts", "M3 21h18M5 21V11M9.5 21V11M14.5 21V11M19 21V11M12 3l9 5H3z", false),
+    };
+
+    private bool _moreOpen;
+
+    private bool InMore
+    {
+        get
+        {
+            var path = Nav.ToBaseRelativePath(Nav.Uri).Split('?')[0];
+            return Items.Any(i => !i.Tab && i.Href.Length > 0 && path.StartsWith(i.Href, StringComparison.OrdinalIgnoreCase));
+        }
+    }
+
+    protected override void OnInitialized() => Nav.LocationChanged += OnLocationChanged;
+
+    private void OnLocationChanged(object? sender, Microsoft.AspNetCore.Components.Routing.LocationChangedEventArgs e)
+    {
+        _moreOpen = false;
+        InvokeAsync(StateHasChanged);
+    }
+
+    public void Dispose() => Nav.LocationChanged -= OnLocationChanged;
+}

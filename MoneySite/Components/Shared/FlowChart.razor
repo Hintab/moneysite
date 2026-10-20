@@ -1,0 +1,85 @@
+@* Monthly income vs spending as paired columns on one dollar axis, with a hover readout per month. *@
+
+<div class="legend">
+    <span><i class="key income"></i>Income</span>
+    <span><i class="key spend"></i>Spending</span>
+</div>
+<svg class="flowchart" viewBox="0 0 @W @H" role="img" aria-label="Income and spending by month">
+    @foreach (var t in _ticks)
+    {
+        <line class="grid @(t.Value == 0 ? "zero" : "")" x1="@L" x2="@(W - R)" y1="@F(t.Y)" y2="@F(t.Y)" />
+    }
+    @foreach (var b in _bars)
+    {
+        <path class="@b.Css" d="@b.Path" />
+    }
+    @* Razor reserves <text>, so labels are emitted as markup. *@
+    @((MarkupString)_labels)
+    @foreach (var h in _hits)
+    {
+        <rect class="hit" x="@F(h.X)" y="@T" width="@F(h.W)" height="@(H - T - B)" data-tip="@h.Tip" />
+    }
+</svg>
+
+@code {
+    [Parameter, EditorRequired] public List<MonthFlow> Months { get; set; } = new();
+
+    private const double W = 900, H = 300, L = 64, R = 8, T = 10, B = 26;
+    private List<(double Y, decimal Value)> _ticks = new();
+    private List<(string Css, string Path)> _bars = new();
+    private List<(double X, double W, string Tip)> _hits = new();
+    private string _labels = "";
+
+    protected override void OnParametersSet()
+    {
+        _bars = new(); _hits = new(); _ticks = new();
+        var months = Months;
+        if (months.Count == 0) { _labels = ""; return; }
+
+        var max = Math.Max(1m, months.Max(m => Math.Max(m.Income, m.Spending)));
+        var step = NiceStep(max / 4);
+        var hi = Math.Ceiling(max / step) * step;
+        double Y(decimal v) => T + (double)((hi - v) / hi) * (H - T - B);
+        for (var v = 0m; v <= hi; v += step) _ticks.Add((Y(v), v));
+
+        var slot = (W - L - R) / months.Count;
+        var barW = Math.Min(28, slot * 0.34);
+        var sb = new System.Text.StringBuilder();
+        foreach (var t in _ticks)
+            sb.Append($"<text class=\"axis\" x=\"{F(L - 8)}\" y=\"{F(t.Y + 4)}\" text-anchor=\"end\">{Money.Short(t.Value)}</text>");
+
+        var every = Math.Max(1, (int)Math.Ceiling(months.Count / 12.0));
+        for (var i = 0; i < months.Count; i++)
+        {
+            var m = months[i];
+            var cx = L + slot * (i + 0.5);
+            _bars.Add(("bar income", Column(cx - barW - 1, barW, Y(m.Income), Y(0))));
+            _bars.Add(("bar spend", Column(cx + 1, barW, Y(m.Spending), Y(0))));
+            var net = m.Income - m.Spending;
+            _hits.Add((L + slot * i, slot,
+                $"{m.Month:MMMM yyyy}|Income {Money.Cents(m.Income)}|Spending {Money.Cents(m.Spending)}|{(net >= 0 ? "Saved" : "Overspent")} {Money.Cents(Math.Abs(net))}"));
+            if ((months.Count - 1 - i) % every == 0)
+                sb.Append($"<text class=\"axis\" x=\"{F(cx)}\" y=\"{F(H - 6)}\" text-anchor=\"middle\">{m.Month:MMM yy}</text>");
+        }
+        _labels = sb.ToString();
+    }
+
+    // A column with 4px rounded top corners, anchored square on the baseline.
+    private static string Column(double x, double w, double top, double baseY)
+    {
+        var h = baseY - top;
+        if (h < 0.5) return "";
+        var r = Math.Min(4, Math.Min(w / 2, h));
+        return $"M{F(x)},{F(baseY)} V{F(top + r)} Q{F(x)},{F(top)} {F(x + r)},{F(top)} H{F(x + w - r)} Q{F(x + w)},{F(top)} {F(x + w)},{F(top + r)} V{F(baseY)} Z";
+    }
+
+    private static decimal NiceStep(decimal rough)
+    {
+        if (rough <= 0) return 1;
+        var mag = (decimal)Math.Pow(10, Math.Floor(Math.Log10((double)rough)));
+        var n = rough / mag;
+        return (n <= 1 ? 1 : n <= 2 ? 2 : n <= 2.5m ? 2.5m : n <= 5 ? 5 : 10) * mag;
+    }
+
+    private static string F(double v) => v.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture);
+}

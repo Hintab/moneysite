@@ -1,0 +1,15 @@
+@* Dropdown for an account's label (Checking, Savings, CD, Retirement, Investment, Credit card). *@
+<select class="cat" value="@Account.Type" @onchange="Changed" aria-label="Type of @Account.Name">
+    @foreach (var t in AccountTypeExtensions.Choices.Contains(Account.Type) ? AccountTypeExtensions.Choices : AccountTypeExtensions.Choices.Append(Account.Type))
+    {
+        <option value="@t">@t.Label()</option>
+    }
+</select>
+
+@code {
+    [Parameter, EditorRequired] public Account Account { get; set; } = default!;
+    [Parameter] public EventCallback<(Account Account, AccountType Type)> OnChange { get; set; }
+
+    private Task Changed(ChangeEventArgs e) =>
+        Enum.TryParse<AccountType>(e.Value?.ToString(), out var type) ? OnChange.InvokeAsync((Account, type)) : Task.CompletedTask;
+}

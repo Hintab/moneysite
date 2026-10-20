@@ -1,0 +1,18 @@
+@* "▲ $1,234 (12%) better vs July" — direction plus amount and, when known, whether that's good;
+   never color alone. *@
+
+@if (Before is decimal b)
+{
+    var diff = Now - b;
+    var verdict = GoodWhenUp is bool up && diff != 0 ? ((diff > 0) == up ? " better" : " worse") : "";
+    <span class="delta">@(diff >= 0 ? "▲" : "▼") @Money.Whole(Math.Abs(diff))@(b != 0 ? $" ({Math.Abs(diff / b):P0})" : "")@verdict vs @Label</span>
+}
+
+
+@code {
+    [Parameter] public decimal Now { get; set; }
+    [Parameter] public decimal? Before { get; set; }
+    [Parameter] public string Label { get; set; } = "";
+    /// true when an increase is good (income, savings), false when it's bad (spending).
+    [Parameter] public bool? GoodWhenUp { get; set; }
+}

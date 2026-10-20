@@ -1,0 +1,383 @@
+@page "/transactions"
+@inject IDbContextFactory<MoneyContext> DbFactory
+@inject Categorizer Categorizer
+@inject DataWindow Window
+@inject NavigationManager Nav
+
+<PageTitle>Transactions · Money Manager</PageTitle>
+<h1>Transactions</h1>
+
+<div class="filters">
+    <input class="input grow" type="search" placeholder="Search merchant or description…" value="@Q"
+           @onchange="@(e => Apply(q: Val(e)))" aria-label="Search" />
+    <select value="@(Account?.ToString() ?? "")" @onchange="@(e => Apply(account: Val(e)))" aria-label="Account">
+        <option value="">All accounts</option>
+        @foreach (var a in _accounts)
+        {
+            <option value="@a.Id">@a.Name</option>
+        }
+    </select>
+    <select value="@(Category ?? "")" @onchange="@(e => Apply(category: Val(e)))" aria-label="Category">
+        <option value="">All categories</option>
+        <option value="none">(no category)</option>
+        @foreach (var c in _cats)
+        {
+            <option value="@c.Id">@c.Name</option>
+        }
+    </select>
+    <select value="@(Month ?? (HasRange ? "range" : ""))" @onchange="@(e => Apply(month: Val(e) == "range" ? null : Val(e)))" aria-label="Month">
+        <option value="">All dates</option>
+        @if (HasRange && Month is null)
+        {
+            <option value="range">@RangeLabel</option>
+        }
+        @foreach (var m in _months)
+        {
+            <option value="@m.ToString("yyyy-MM")">@m.ToString("MMMM yyyy")</option>
+        }
+    </select>
+    <div class="seg" role="group" aria-label="Direction">
+        <button class="@(Dir is null ? "on" : "")" @onclick="@(() => Apply(dir: ""))">All</button>
+        <button class="@(Dir == "out" ? "on" : "")" @onclick="@(() => Apply(dir: "out"))">Money out</button>
+        <button class="@(Dir == "in" ? "on" : "")" @onclick="@(() => Apply(dir: "in"))">Money in</button>
+    </div>
+    <select class="m-only" value="@SortValue" @onchange="@(e => SortFromPicker(Val(e)))" aria-label="Sort">
+        <option value="date:desc">Newest first</option>
+        <option value="date:asc">Oldest first</option>
+        <option value="amount:asc">Biggest spending</option>
+        <option value="amount:desc">Biggest deposits</option>
+        <option value="merchant:asc">Merchant A–Z</option>
+    </select>
+    @if (Filtered)
+    {
+        <a class="btn secondary" href="transactions">Clear filters</a>
+    }
+</div>
+
+@if (HasRange)
+{
+    <p class="chip">Dates: <b>@RangeLabel</b> <button class="icon" title="Remove date filter" @onclick="@(() => Navigate(new() { ["from"] = null, ["to"] = null }))">✕</button></p>
+}
+@if (!string.IsNullOrEmpty(Merchant))
+{
+    <p class="chip">Merchant: <b>@Merchant</b> <button class="icon" title="Remove merchant filter" @onclick="@(() => Apply(merchant: ""))">✕</button></p>
+}
+
+<p class="summary">
+    <span><b>@_rows.Count.ToString("N0")</b> transaction@(_rows.Count == 1 ? "" : "s")</span>
+    <span>in <b class="pos">@Money.Whole(_rows.Where(r => r.Amount > 0).Sum(r => r.Amount))</b></span>
+    <span>out <b class="neg">@Money.Whole(-_rows.Where(r => r.Amount < 0).Sum(r => r.Amount))</b></span>
+    @if (_hiddenIgnored > 0)
+    {
+        <span class="muted">@_hiddenIgnored ignored hidden · <a href="" @onclick="@(() => Apply(category: _ignoreId.ToString()))" @onclick:preventDefault>show</a></span>
+    }
+</p>
+
+@if (_suggestion is not null)
+{
+    <div class="notice">
+        Saved. Add
+        <input class="input" @bind="_suggestion.Keyword" style="width:14rem" aria-label="Keyword" />
+        to the <b>@_suggestion.CategoryName</b> keywords, so it's categorized automatically from now on?
+        <button class="btn" @onclick="AddKeyword">Add keyword</button>
+        <button class="btn secondary" @onclick="() => _suggestion = null">Just this one</button>
+    </div>
+}
+@if (!string.IsNullOrEmpty(_msg))
+{
+    <p class="msg">@_msg</p>
+}
+
+<section class="panel">
+    <table class="table tx-table">
+        <thead>
+            <tr>
+                <SortTh Key="date" Label="Date" Current="@(Sort ?? "date")" Desc="Desc" OnSort="SortBy" />
+                <SortTh Key="merchant" Label="Merchant" Current="@(Sort ?? "date")" Desc="Desc" OnSort="SortBy" />
+                <SortTh Key="account" Label="Account" Current="@(Sort ?? "date")" Desc="Desc" OnSort="SortBy" />
+                <SortTh Key="category" Label="Category" Current="@(Sort ?? "date")" Desc="Desc" OnSort="SortBy" />
+                <SortTh Key="amount" Label="Amount" Current="@(Sort ?? "date")" Desc="Desc" OnSort="SortBy" Class="num" />
+            </tr>
+        </thead>
+        <tbody>
+        @foreach (var t in _rows.Take(_limit))
+        {
+            <tr>
+                <td class="nowrap c-date">@t.Date.ToString("MMM d, yyyy")<span class="m-only"> · @t.AccountName</span></td>
+                <td class="c-merch">
+                    @if (t.Merchant is not null)
+                    {
+                        <a href="@($"transactions?merchant={Uri.EscapeDataString(t.Merchant)}")">@t.Merchant</a>
+                    }
+                    <div class="muted small">@t.Description</div>
+                    @if (t.PeerAccount is not null)
+                    {
+                        <div class="peer" title="Matched transfer between your accounts — not counted as spending or income">
+                            ⇄ @(t.Amount < 0 ? "to" : "from") @t.PeerAccount
+                        </div>
+                    }
+                </td>
+                <td class="muted small c-acct">@t.AccountName</td>
+                <td class="c-cat">
+                    <select class="cat" style="--cat:@CatColor(t.CategoryId)" value="@t.CategoryId"
+                            @onchange="e => SetCategory(t, e.Value?.ToString())" aria-label="Category">
+                        @if (t.CategoryId is null)
+                        {
+                            <option value="">—</option>
+                        }
+                        @foreach (var c in _cats)
+                        {
+                            <option value="@c.Id">@c.Name</option>
+                        }
+                    </select>
+                </td>
+                <td class="num nowrap c-amt @(t.Amount < 0 ? "neg" : "pos")">@Money.Cents(t.Amount)</td>
+            </tr>
+        }
+        </tbody>
+        @if (_rows.Count > 0)
+        {
+            var net = _rows.Sum(r => r.Amount);
+            <tfoot>
+                <tr class="total">
+                    <td colspan="4">
+                        Total · @_rows.Count.ToString("N0") transaction@(_rows.Count == 1 ? "" : "s")@(_rows.Count > _limit ? " (including ones not shown yet)" : "")
+                        <div class="small">in <span class="pos">@Money.Cents(_rows.Where(r => r.Amount > 0).Sum(r => r.Amount))</span> · out <span class="neg">@Money.Cents(-_rows.Where(r => r.Amount < 0).Sum(r => r.Amount))</span></div>
+                    </td>
+                    <td class="num nowrap">
+                        <span class="@(net < 0 ? "neg" : "pos")">@Money.Cents(net)</span>
+                        <div class="small"><span class="muted">avg</span> <span class="@(net < 0 ? "neg" : "pos")">@Money.Cents(net / _rows.Count)</span></div>
+                    </td>
+                </tr>
+            </tfoot>
+        }
+    </table>
+</section>
+@if (_rows.Count == 0)
+{
+    <p class="muted">No transactions match.</p>
+}
+@if (_rows.Count > _limit)
+{
+    <button class="btn secondary" @onclick="() => _limit += PageSize">Show more (@(_rows.Count - _limit) left)</button>
+}
+
+@code {
+    [SupplyParameterFromQuery] public string? Q { get; set; }
+    [SupplyParameterFromQuery] public int? Account { get; set; }
+    [SupplyParameterFromQuery] public string? Category { get; set; }   // category id, or "none"
+    [SupplyParameterFromQuery] public string? Month { get; set; }      // yyyy-MM
+    [SupplyParameterFromQuery] public string? Merchant { get; set; }
+    [SupplyParameterFromQuery] public string? From { get; set; }       // yyyy-MM-dd, inclusive
+    [SupplyParameterFromQuery] public string? To { get; set; }         // yyyy-MM-dd, inclusive
+    [SupplyParameterFromQuery] public string? Dir { get; set; }        // "in" | "out"
+    [SupplyParameterFromQuery] public string? Sort { get; set; }       // date | merchant | account | category | amount
+    [SupplyParameterFromQuery(Name = "asc")] public bool Asc { get; set; }
+
+    private bool Desc => !Asc;
+    private const int PageSize = 200;
+    private int _limit = PageSize;
+    private List<Row> _rows = new();
+    private List<Category> _cats = new();
+    private List<Account> _accounts = new();
+    private List<DateTime> _months = new();
+    private DateTime? _windowStart;
+    private int? _ignoreId;
+    private int _hiddenIgnored;
+    private string _msg = "";
+    private Suggestion? _suggestion;
+
+    private class Suggestion
+    {
+        public int TransactionId { get; init; }
+        public string? Merchant { get; init; }
+        public int CategoryId { get; init; }
+        public string CategoryName { get; init; } = "";
+        public string Keyword { get; set; } = "";
+    }
+
+    private class Row
+    {
+        public int Id { get; init; }
+        public DateTime Date { get; init; }
+        public string Description { get; init; } = "";
+        public string? Merchant { get; init; }
+        public string AccountName { get; init; } = "";
+        public decimal Amount { get; init; }
+        public int? CategoryId { get; set; }
+        public bool CategoryManual { get; set; }
+        public string? PeerAccount { get; init; }
+    }
+
+    private bool Filtered => !string.IsNullOrEmpty(Q) || Account is not null || Category is not null || Month is not null
+                             || Merchant is not null || Dir is not null || HasRange;
+
+    private static DateTime? Day(string? s) =>
+        DateTime.TryParseExact(s, "yyyy-MM-dd", null, System.Globalization.DateTimeStyles.None, out var d) ? d : null;
+    private bool HasRange => Day(From) is not null || Day(To) is not null;
+    private string RangeLabel => (Day(From), Day(To)) switch
+    {
+        (DateTime f, DateTime t) when f.Day == 1 && t == f.AddMonths(1).AddDays(-1) => f.ToString("MMMM yyyy"),
+        (DateTime f, DateTime t) => $"{f:MMM d, yyyy} – {t:MMM d, yyyy}",
+        (DateTime f, null) => $"Since {f:MMM d, yyyy}",
+        (null, DateTime t) => $"Through {t:MMM d, yyyy}",
+        _ => "",
+    };
+
+    protected override async Task OnInitializedAsync()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        _cats = await db.Categories.AsNoTracking().OrderBy(c => c.Name).ToListAsync();
+        _accounts = await db.Accounts.AsNoTracking().OrderBy(a => a.Name).ToListAsync();
+        _windowStart = await Window.StartAsync();
+        var oldest = _windowStart ?? await db.Transactions.OrderBy(t => t.Date).Select(t => (DateTime?)t.Date).FirstOrDefaultAsync();
+        var thisMonth = new DateTime(DateTime.Today.Year, DateTime.Today.Month, 1);
+        for (var m = thisMonth; oldest is not null && m >= new DateTime(oldest.Value.Year, oldest.Value.Month, 1); m = m.AddMonths(-1))
+            _months.Add(m);
+    }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        _limit = PageSize;
+        await Load();
+    }
+
+    private async Task Load()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        var query = db.Transactions.AsNoTracking();
+        if (_windowStart is DateTime ws) query = query.Where(t => t.Date >= ws);
+        if (!string.IsNullOrWhiteSpace(Q))
+        {
+            var pattern = "%" + Q.Trim().Replace("\\", "\\\\").Replace("%", "\\%").Replace("_", "\\_") + "%";
+            query = query.Where(t => EF.Functions.Like(t.Description, pattern, "\\") || EF.Functions.Like(t.Merchant!, pattern, "\\"));
+        }
+        if (Account is int acc) query = query.Where(t => t.AccountId == acc);
+        if (Category == "none") query = query.Where(t => t.CategoryId == null);
+        else if (int.TryParse(Category, out var cat)) query = query.Where(t => t.CategoryId == cat);
+        if (!string.IsNullOrEmpty(Merchant)) query = query.Where(t => t.Merchant == Merchant);
+        if (Day(From) is DateTime rangeFrom) query = query.Where(t => t.Date >= rangeFrom);
+        if (Day(To) is DateTime rangeTo)
+        {
+            var toExclusive = rangeTo.AddDays(1);
+            query = query.Where(t => t.Date < toExclusive);
+        }
+        if (DateTime.TryParseExact(Month, "yyyy-MM", null, System.Globalization.DateTimeStyles.None, out var m))
+        {
+            var end = m.AddMonths(1);
+            query = query.Where(t => t.Date >= m && t.Date < end);
+        }
+
+        var rows = await query.Select(t => new Row
+        {
+            Id = t.Id, Date = t.Date, Description = t.Description, Merchant = t.Merchant,
+            AccountName = t.Account!.Name, Amount = t.Amount, CategoryId = t.CategoryId, CategoryManual = t.CategoryManual,
+            PeerAccount = t.TransferPeerId == null ? null
+                : db.Transactions.Where(p => p.Id == t.TransferPeerId).Select(p => p.Account!.Name).FirstOrDefault()
+        }).ToListAsync();
+
+        // Direction and sorting run in memory: SQLite can't compare or order decimals.
+        if (Dir == "in") rows = rows.Where(r => r.Amount > 0).ToList();
+        else if (Dir == "out") rows = rows.Where(r => r.Amount < 0).ToList();
+
+        // Ignored transactions only show when that category is picked.
+        var ignoreId = _cats.FirstOrDefault(c => c.Name == DbSeed.Ignore)?.Id;
+        var showIgnored = ignoreId is int ig && Category == ig.ToString();
+        _ignoreId = ignoreId;
+        _hiddenIgnored = showIgnored ? 0 : rows.Count(r => r.CategoryId == ignoreId);
+        if (!showIgnored) rows = rows.Where(r => r.CategoryId != ignoreId || ignoreId is null).ToList();
+
+        var catNames = _cats.ToDictionary(c => c.Id, c => c.Name);
+        Func<Row, object> key = Sort switch
+        {
+            "merchant" => r => (r.Merchant ?? r.Description).ToLowerInvariant(),
+            "account" => r => r.AccountName.ToLowerInvariant(),
+            "category" => r => r.CategoryId is int id ? catNames.GetValueOrDefault(id, "") : "",
+            "amount" => r => r.Amount,
+            _ => r => r.Date,
+        };
+        _rows = (Desc ? rows.OrderByDescending(key) : rows.OrderBy(key))
+            .ThenByDescending(r => r.Date).ThenByDescending(r => r.Id).ToList();
+    }
+
+    private string CatColor(int? id) => (id is int i ? _cats.FirstOrDefault(c => c.Id == i)?.Color : null) ?? "transparent";
+
+    private static string Val(ChangeEventArgs e) => e.Value?.ToString() ?? "";
+
+    // Phones hide the column headers, so sorting is a dropdown there.
+    private string SortValue => $"{Sort ?? "date"}:{(Asc ? "asc" : "desc")}";
+    private void SortFromPicker(string value)
+    {
+        var parts = value.Split(':');
+        Navigate(new() { ["sort"] = parts[0] == "date" ? null : parts[0], ["asc"] = parts.ElementAtOrDefault(1) == "asc" ? true : null });
+    }
+
+    private void SortBy(string key)
+    {
+        var current = Sort ?? "date";
+        // Same column flips direction; a new column starts newest/largest first, text columns A→Z.
+        var asc = current == key ? !Asc : key is "merchant" or "account" or "category";
+        Navigate(new() { ["sort"] = key == "date" ? null : key, ["asc"] = asc ? true : null });
+    }
+
+    private void Apply(string? q = null, string? account = null, string? category = null, string? month = null,
+        string? merchant = null, string? dir = null)
+    {
+        var p = new Dictionary<string, object?>();
+        if (q is not null) p["q"] = q.Length == 0 ? null : q;
+        if (account is not null) p["account"] = int.TryParse(account, out var a) ? a : null;
+        if (category is not null) p["category"] = category.Length == 0 ? null : category;
+        if (month is not null)
+        {
+            p["month"] = month.Length == 0 ? null : month;
+            p["from"] = p["to"] = null;   // picking a month replaces a date range
+        }
+        if (merchant is not null) p["merchant"] = merchant.Length == 0 ? null : merchant;
+        if (dir is not null) p["dir"] = dir.Length == 0 ? null : dir;
+        Navigate(p);
+    }
+
+    private void Navigate(Dictionary<string, object?> changes)
+    {
+        _msg = "";
+        _suggestion = null;
+        Nav.NavigateTo(Nav.GetUriWithQueryParameters(changes), replace: true);
+    }
+
+    private async Task SetCategory(Row t, string? value)
+    {
+        _msg = "";
+        _suggestion = null;
+        if (!int.TryParse(value, out var id)) return;
+        await using var db = await DbFactory.CreateDbContextAsync();
+
+        await db.Transactions.Where(x => x.Id == t.Id)
+            .ExecuteUpdateAsync(s => s.SetProperty(x => x.CategoryId, id).SetProperty(x => x.CategoryManual, true));
+        t.CategoryId = id;
+        t.CategoryManual = true;
+
+        _suggestion = new Suggestion
+        {
+            TransactionId = t.Id,
+            Merchant = t.Merchant,
+            CategoryId = id,
+            CategoryName = _cats.First(c => c.Id == id).Name,
+            Keyword = Categorizer.KeywordFor(t.Merchant ?? Categorizer.SuggestKeyword(t.Description)),
+        };
+    }
+
+    private async Task AddKeyword()
+    {
+        if (_suggestion is null || string.IsNullOrWhiteSpace(_suggestion.Keyword)) return;
+        var s = _suggestion;
+        // The keyword now decides this one too, so it no longer needs to be a hand-picked exception.
+        await using (var db = await DbFactory.CreateDbContextAsync())
+            await db.Transactions.Where(x => x.Id == s.TransactionId)
+                .ExecuteUpdateAsync(u => u.SetProperty(x => x.CategoryManual, false));
+        var changed = await Categorizer.AddKeywordAsync(s.Keyword, s.CategoryId, s.Merchant);
+        _msg = $"Added \"{Categorizer.KeywordFor(s.Keyword)}\" to the {s.CategoryName} keywords. " +
+               $"{changed} other transaction{(changed == 1 ? "" : "s")} re-categorized.";
+        _suggestion = null;
+        await Load();
+    }
+}

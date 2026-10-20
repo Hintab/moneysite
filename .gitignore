@@ -1,0 +1,22 @@
+bin/
+obj/
+.vs/
+*.user
+
+# Personal financial data and Plaid access tokens live here — never commit it.
+**/Data/*.db*
+*.db
+*.db-shm
+*.db-wal
+*.db-journal
+
+# Plaid keys and other secrets.
+.env
+.env.*
+!.env.example
+secrets.json
+appsettings.*.local.json
+
+unsloth-tmp/
+.unsloth_attachments/
+NuGet/

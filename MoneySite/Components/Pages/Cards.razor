@@ -1,0 +1,186 @@
+@page "/cards"
+@inject ReportService Reports
+@inject DataWindow Window
+
+<PageTitle>Credit cards · Money Manager</PageTitle>
+<h1>Credit cards</h1>
+<p class="subtitle">Card payments from your bank are matched as transfers, not spending.
+    <span class="info" title="Paid in full = matched a statement balance to the cent (no interest). Paid off = cleared everything owed. Paid down = a partial payment.">i</span></p>
+
+@if (_loading)
+{
+    <p class="muted">Loading…</p>
+    return;
+}
+
+@if (_cards.Count == 0)
+{
+    <p class="muted">No credit cards linked yet — <a href="accounts">connect a bank</a>.</p>
+}
+
+@foreach (var c in _cards)
+{
+    <section class="panel">
+        <h2>@c.Card.Name <span class="muted small">· @c.Card.Institution</span></h2>
+        <div class="cards compact">
+            <div class="card"><small>Owed now</small><b>@Money.Cents(c.OwedNow)</b></div>
+            <div class="card"><small>Paid in this period</small><b class="pos">@Money.Cents(c.Months.Sum(m => m.Payments))</b></div>
+            <div class="card"><small>Bought in this period</small><b class="neg">@Money.Cents(c.Months.Sum(m => m.Purchases))</b></div>
+        </div>
+
+        <div class="scroll-x">
+            <table class="table">
+                <thead>
+                    <tr>
+                        <th>Month</th><th class="num hide-sm">Owed at start</th><th class="num">Purchases</th>
+                        @if (c.Months.Any(m => m.Advances > 0))
+                        {
+                            <th class="num" title="Moved from the card to another of your accounts">Cash advances</th>
+                        }
+                        <th class="num">Payments</th><th class="num hide-sm">Refunds</th><th class="num hide-sm">Owed at end</th><th>Status</th>
+                    </tr>
+                </thead>
+                <tbody>
+                @foreach (var m in Enumerable.Reverse(c.Months))
+                {
+                    <tr>
+                        <td class="nowrap"><a href="@($"transactions?account={c.Card.Id}&month={m.Month:yyyy-MM}")">@m.Month.ToString("MMM yyyy")</a></td>
+                        <td class="num hide-sm">@Money.Cents(m.OwedAtStart)</td>
+                        <td class="num neg">@(m.Purchases > 0 ? Money.Cents(m.Purchases) : "–")</td>
+                        @if (c.Months.Any(x => x.Advances > 0))
+                        {
+                            <td class="num neg">@(m.Advances > 0 ? Money.Cents(m.Advances) : "–")</td>
+                        }
+                        <td class="num pos">@(m.Payments > 0 ? Money.Cents(m.Payments) : "–")</td>
+                        <td class="num hide-sm pos">@(m.Credits > 0 ? Money.Cents(m.Credits) : "–")</td>
+                        <td class="num hide-sm">@Money.Cents(m.OwedAtEnd)</td>
+                        <td><span class="status @StatusClass(m.Status)">@StatusIcon(m.Status) @m.Status</span></td>
+                    </tr>
+                }
+                </tbody>
+                <tfoot>
+                    <tr class="total">
+                        <td>Total</td>
+                        <td class="num hide-sm">@Money.Cents(c.Months[0].OwedAtStart)</td>
+                        <td class="num neg">@Money.Cents(c.Months.Sum(m => m.Purchases))</td>
+                        @if (c.Months.Any(x => x.Advances > 0))
+                        {
+                            <td class="num neg">@Money.Cents(c.Months.Sum(m => m.Advances))</td>
+                        }
+                        <td class="num pos">@Money.Cents(c.Months.Sum(m => m.Payments))</td>
+                        <td class="num hide-sm pos">@Money.Cents(c.Months.Sum(m => m.Credits))</td>
+                        <td class="num hide-sm">@Money.Cents(c.Months[^1].OwedAtEnd)</td>
+                        <td></td>
+                    </tr>
+                </tfoot>
+            </table>
+        </div>
+
+        <details>
+            <summary>@c.Payments.Count payment@(c.Payments.Count == 1 ? "" : "s") and where they came from</summary>
+            <div class="scroll-x">
+                <table class="table">
+                    <thead><tr><th>Credited to card</th><th class="num">Amount</th><th>Result</th><th>Paid from</th></tr></thead>
+                    <tbody>
+                    @foreach (var p in c.Payments)
+                    {
+                        <tr>
+                            <td class="nowrap">@p.Date.ToString("MMM d, yyyy")</td>
+                            <td class="num pos">@Money.Cents(p.Amount)</td>
+                            <td>
+                                <span class="status @StatusClass(p.Status)">@StatusIcon(p.Status) @p.Status</span>
+                                @if (p.Status == PayStatus.InFull && p.StatementDate is DateTime sd)
+                                {
+                                    <div class="muted small">balance as of ~@sd.ToString("MMM d")</div>
+                                }
+                            </td>
+                            <td>
+                                @if (p.FromAccount is not null)
+                                {
+                                    <span>⇄ @p.FromAccount</span> <span class="muted small">on @p.FromDate?.ToString("MMM d")</span>
+                                }
+                                else
+                                {
+                                    <span class="muted">An account that isn't linked (or before its history starts)</span>
+                                }
+                            </td>
+                        </tr>
+                    }
+                    </tbody>
+                    <tfoot>
+                        <tr class="total">
+                            <td>Total</td>
+                            <td class="num pos">@Money.Cents(c.Payments.Sum(p => p.Amount))</td>
+                            <td colspan="2" class="muted small">@c.Payments.Count(p => p.Status is PayStatus.InFull or PayStatus.PaidOff) of @c.Payments.Count paid in full</td>
+                        </tr>
+                    </tfoot>
+                </table>
+            </div>
+        </details>
+    </section>
+}
+
+<section class="panel">
+    <h2>Payments to cards that aren't linked</h2>
+    @if (_unlinked.Count == 0)
+    {
+        <p class="muted">None — every card payment from your bank accounts went to a linked card.</p>
+    }
+    else
+    {
+        <p class="muted small">These left your bank account for a card that isn't connected (e.g. a store card). Its purchases
+            can't be seen, so these payments count as spending under <b>Credit Card Payment</b>. Connect that card on the
+            <a href="accounts">Accounts</a> page and they'll be matched as transfers instead.</p>
+        <div class="scroll-x">
+            <table class="table">
+                <thead><tr><th>Date</th><th>Paid to</th><th>From</th><th class="num">Amount</th></tr></thead>
+                <tbody>
+                @foreach (var u in _unlinked)
+                {
+                    <tr>
+                        <td class="nowrap">@u.Date.ToString("MMM d, yyyy")</td>
+                        <td>@u.Merchant</td>
+                        <td class="muted small">@u.FromAccount</td>
+                        <td class="num neg">@Money.Cents(-u.Amount)</td>
+                    </tr>
+                }
+                </tbody>
+                <tfoot>
+                    <tr class="total">
+                        <td colspan="3">Total · @_unlinked.Count payment@(_unlinked.Count == 1 ? "" : "s")</td>
+                        <td class="num neg">@Money.Cents(-_unlinked.Sum(u => u.Amount))</td>
+                    </tr>
+                </tfoot>
+            </table>
+        </div>
+    }
+</section>
+
+@if (_windowStart is DateTime ws)
+{
+    <p class="muted small">Showing months since @ws.ToString("MMM yyyy") (<a href="accounts">history window</a>).</p>
+}
+
+@code {
+    private bool _loading = true;
+    private List<CardReport> _cards = new();
+    private List<UnlinkedCardPayment> _unlinked = new();
+    private DateTime? _windowStart;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _windowStart = await Window.StartAsync();
+        (_cards, _unlinked) = await Reports.CreditCardsAsync();
+        _loading = false;
+    }
+
+    private static string StatusClass(string s) => s switch
+    {
+        PayStatus.PaidOff or PayStatus.InFull => "good", PayStatus.PaidDown => "warn", PayStatus.NoPayment => "bad", _ => "",
+    };
+
+    private static string StatusIcon(string s) => s switch
+    {
+        PayStatus.PaidOff or PayStatus.InFull => "✓", PayStatus.PaidDown => "◐", PayStatus.NoPayment => "!", _ => "–",
+    };
+}

@@ -1,0 +1,88 @@
+@* Pie chart with percent labels on the slices and a legend listing percent and amount.
+   Slices under 4% are labeled only in the legend, so labels never collide. *@
+
+<div class="pie-wrap">
+    <svg class="pie" viewBox="-110 -110 220 220" role="img" aria-label="@AriaLabel">
+        <defs>
+            @foreach (var s in _slices.Where(x => x.Striped))
+            {
+                <pattern id="@PatternId(s.Name)" patternUnits="userSpaceOnUse" width="7" height="7" patternTransform="rotate(45)">
+                    <rect width="7" height="7" fill="@s.Color" />
+                    <rect width="3" height="7" fill="rgba(255,255,255,.38)" />
+                </pattern>
+            }
+        </defs>
+        @foreach (var s in _slices)
+        {
+            <path d="@s.Path" fill="@(s.Striped ? $"url(#{PatternId(s.Name)})" : s.Color)" data-tip="@($"{s.Name}|{s.Pct:0.0}%|{Money.Cents(s.Amount)}")" />
+        }
+        @((MarkupString)_labels)
+    </svg>
+    <ul class="pie-legend">
+        @foreach (var s in _slices)
+        {
+            <li data-tip="@($"{s.Name}|{s.Pct:0.0}%|{Money.Cents(s.Amount)}")">
+                <i style="@(s.Striped ? $"background:repeating-linear-gradient(45deg,{s.Color} 0 3px,rgba(255,255,255,.55) 3px 5px)" : $"background:{s.Color}")"></i>
+                <span class="name">@if (s.Href is not null) { <a href="@s.Href">@s.Name</a> } else { @s.Name }</span>
+                <b>@s.Pct.ToString("0")%</b>
+                <span class="amt @s.Tone">@Money.Whole(s.Amount)</span>
+            </li>
+        }
+        @if (_slices.Count > 1)
+        {
+            <li class="total"><i></i><span class="name">Total</span><b>100%</b><span class="amt @TotalTone">@Money.Whole(_slices.Sum(s => s.Amount))</span></li>
+        }
+    </ul>
+</div>
+
+@code {
+    /// Striped = drawn with diagonal stripes, so it can't be confused with a similar category color.
+    /// Tone: "neg" (spent, red) or "pos" (earned/kept, green) for the legend amount.
+    public record Slice(string Name, string Color, decimal Amount, bool Striped = false, string? Href = null, string? Tone = null);
+
+    [Parameter, EditorRequired] public List<Slice> Slices { get; set; } = new();
+    [Parameter] public string AriaLabel { get; set; } = "Pie chart";
+    [Parameter] public string? TotalTone { get; set; }
+
+    private const double Radius = 100;
+    private List<(string Name, string Color, decimal Amount, double Pct, string Path, bool Striped, string? Href, string? Tone)> _slices = new();
+    private readonly string _uid = Guid.NewGuid().ToString("N")[..8];
+    private string PatternId(string name) => $"pie-{_uid}-{System.Text.RegularExpressions.Regex.Replace(name, "[^A-Za-z0-9]", "")}";
+    private string _labels = "";
+
+    protected override void OnParametersSet()
+    {
+        _slices = new();
+        var total = Slices.Where(s => s.Amount > 0).Sum(s => s.Amount);
+        if (total <= 0) { _labels = ""; return; }
+
+        var sb = new System.Text.StringBuilder();
+        var angle = -Math.PI / 2;                       // start at 12 o'clock, go clockwise
+        foreach (var s in Slices.Where(s => s.Amount > 0))
+        {
+            var frac = (double)(s.Amount / total);
+            var end = angle + frac * 2 * Math.PI;
+            string path;
+            if (frac >= 0.9999)
+                path = $"M0,{F(-Radius)} A{F(Radius)},{F(Radius)} 0 1,1 0,{F(Radius)} A{F(Radius)},{F(Radius)} 0 1,1 0,{F(-Radius)} Z";
+            else
+            {
+                var large = frac > 0.5 ? 1 : 0;
+                path = $"M0,0 L{F(Radius * Math.Cos(angle))},{F(Radius * Math.Sin(angle))} " +
+                       $"A{F(Radius)},{F(Radius)} 0 {large},1 {F(Radius * Math.Cos(end))},{F(Radius * Math.Sin(end))} Z";
+            }
+            _slices.Add((s.Name, s.Color, s.Amount, frac * 100, path, s.Striped, s.Href, s.Tone));
+
+            if (frac >= 0.04)
+            {
+                var mid = (angle + end) / 2;
+                var r = frac > 0.6 ? 0 : Radius * 0.64;
+                sb.Append($"<text class=\"pie-pct\" x=\"{F(r * Math.Cos(mid))}\" y=\"{F(r * Math.Sin(mid) + 4)}\" text-anchor=\"middle\">{frac * 100:0}%</text>");
+            }
+            angle = end;
+        }
+        _labels = sb.ToString();
+    }
+
+    private static string F(double v) => v.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture);
+}
