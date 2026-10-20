@@ -19,7 +19,7 @@ services:
     environment:
       MONEYSITE_DB_PATH: /data/money.db
     volumes:
-      # Unraid appdata convention. The folder must be owned by UID 1654 (the image's
-      # non-root "app" user); see DOCKER.md.
+      # Unraid appdata convention. The container creates it and sets its owner to
+      # PUID:PGID (default 99:100, nobody:users) on every start; no chown needed.
       - /mnt/user/appdata/moneysite:/data
     restart: unless-stopped

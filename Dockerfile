@@ -12,12 +12,14 @@ RUN dotnet publish MoneySite/MoneySite.csproj -c Release -o /app --no-restore
 FROM mcr.microsoft.com/dotnet/aspnet:8.0
 WORKDIR /app
 COPY --from=build /app .
-# The database lives on a volume, not inside the image. Create /data owned by the
-# image's non-root "app" user (UID $APP_UID = 1654) so a new named volume starts out writable.
-RUN mkdir /data && chown "$APP_UID:$APP_UID" /data
-ENV MONEYSITE_DB_PATH=/data/money.db
+COPY --chmod=755 docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+# The database lives on a volume, not inside the image. The entrypoint creates the
+# folder, hands it to PUID:PGID (default 99:100, Unraid's nobody:users) and drops
+# root before starting the app, so no manual chown is needed.
+ENV MONEYSITE_DB_PATH=/data/money.db \
+    PUID=99 \
+    PGID=100
 VOLUME ["/data"]
-USER $APP_UID
 # The .NET 8 base image already listens on port 8080 (ASPNETCORE_HTTP_PORTS=8080).
 EXPOSE 8080
-ENTRYPOINT ["dotnet", "MoneySite.dll"]
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]

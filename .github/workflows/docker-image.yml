@@ -1,5 +1,5 @@
-# Builds the Docker image and publishes it to GitHub's registry as
-# ghcr.io/hintab/moneysite, and to Docker Hub as hintab/moneysite once the
+# Builds the Docker image, starts it once as a smoke test, then publishes it to GitHub's
+# registry as ghcr.io/hintab/moneysite, and to Docker Hub as hintab/moneysite once the
 # DOCKERHUB_USERNAME and DOCKERHUB_TOKEN repository secrets are set.
 name: Docker image
 
@@ -24,6 +24,35 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build for testing
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: moneysite:test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # A fresh install must start with an empty, root-owned data folder and no manual
+      # chown: the app creates its database there, owned by Unraid's nobody:users (99:100),
+      # and doesn't run as root.
+      - name: Smoke test
+        run: |
+          set -e
+          DATA="$RUNNER_TEMP/data"
+          sudo mkdir -p "$DATA" && sudo chown root:root "$DATA" && sudo chmod 755 "$DATA"
+          docker run -d --name smoke -p 8080:8080 -v "$DATA:/data" moneysite:test
+          trap 'docker logs smoke' EXIT
+          for i in $(seq 1 30); do curl -fsS -o /dev/null http://localhost:8080/ && break; sleep 2; done
+          curl -fsS -o /dev/null http://localhost:8080/accounts
+          curl -fsS -o backup.db http://localhost:8080/backup/download
+          test -s backup.db
+          test "$(sudo stat -c '%u:%g' "$DATA/money.db")" = "99:100"
+          docker exec smoke sh -c 'grep "^Uid:" /proc/1/status' | grep -qv "\s0\s"
+          echo "Smoke test passed"
 
       - uses: docker/login-action@v3
         with:
@@ -56,9 +85,11 @@ jobs:
             type=semver,pattern={{version}}
             type=sha,format=short
 
-      - uses: docker/build-push-action@v6
+      - name: Publish
+        uses: docker/build-push-action@v6
         with:
           context: .
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha

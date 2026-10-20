@@ -20,3 +20,6 @@ appsettings.*.local.json
 unsloth-tmp/
 .unsloth_attachments/
 NuGet/
+
+# Data protection keys written beside the local database.
+**/Data/keys/

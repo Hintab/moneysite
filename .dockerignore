@@ -28,3 +28,4 @@ unsloth-tmp/
 .unsloth_attachments/
 NuGet/
 *.py
+**/Data/keys/

@@ -2,15 +2,14 @@
 
 # Running MoneySite in Docker on Unraid
 
-The image holds only the app. All your data (Plaid access tokens, sync cursors,
-categories, keyword rules, merchant groupings, account labels, balance snapshots) lives
-in one SQLite database, `money.db`. On Unraid it is kept in
-`/mnt/user/appdata/moneysite`, which the container sees as `/data`.
+The image holds only the app. All your data (Plaid connections, transactions, categories,
+keyword rules, merchant groupings, account labels, balance history) lives in one SQLite
+database, `money.db`, in the folder mapped to `/data`. On Unraid that's
+`/mnt/user/appdata/moneysite`.
 
-Using the same Plaid keys does **not** download everything again. A full download only
-happens if the container starts with an empty database. Copy your existing `money.db`
-over first (step 3) and your linked banks keep working without re-linking. The next
-sync only fetches what's new since the last one.
+A fresh install needs no manual setup. On every start the container creates `/data` if
+needed, hands it to `PUID:PGID` (default `99:100`, Unraid's `nobody:users`), then starts
+the app as that user, never as root. An empty folder becomes a new, empty database.
 
 ## ⚠ Security warning: the app has no login
 
@@ -20,171 +19,81 @@ Anyone who can reach the app's address can see every transaction and balance, an
 - Keep it reachable only from your home network. For access away from home, use a VPN
   (for example Tailscale), or a reverse proxy that requires a login.
 - **Never port-forward it on your router** or expose it through a public tunnel.
-- `docker-compose.yml` publishes port 8080 to the LAN (`"8080:8080"`). To limit it to
-  the server itself, change that to `"127.0.0.1:8080:8080"`.
 
-## 1. Stop the app on the Windows PC
+## 1. Get the template onto Unraid
 
-Stop the app everywhere it is running (Visual Studio debugging, `dotnet run`, a
-published copy). In PowerShell on the PC, check that nothing is left:
+Unraid 7 no longer has a "Template repositories" setting. Instead, a small script pulls
+every template from [Hintab/docker_templates](https://github.com/Hintab/docker_templates)
+into Unraid's **default templates** folder.
 
-```powershell
-Get-Process MoneySite -ErrorAction SilentlyContinue
-```
+Use `/boot/config/plugins/dockerMan/templates/…`, **not** `templates-user`. Unraid finds a
+container's saved settings by taking the first file in `templates-user` whose `<Name>`
+matches the container. A plain copy of the template there gets picked instead of your
+saved `my-MoneySite.xml`, so **Edit** shows the defaults, and **Apply update** rebuilds the
+container without your Plaid keys.
 
-This should print nothing. Stopping it lets SQLite write the `-wal` file back into
-`money.db`, and it makes sure the files don't change while you copy them.
-
-From now on, **don't run the Windows copy and the Unraid copy at the same time** (see
-below).
-
-## 2. Prepare the data folder on Unraid
-
-In the Unraid terminal (or over SSH):
-
-```bash
-mkdir -p /mnt/user/appdata/moneysite
-```
-
-If you already started the container once with an empty database, stop it and remove
-the empty database first. Otherwise its leftover `-wal` file could be mixed with your
-real `money.db`:
-
-```bash
-rm -f /mnt/user/appdata/moneysite/money.db /mnt/user/appdata/moneysite/money.db-wal /mnt/user/appdata/moneysite/money.db-shm
-```
-
-## 3. Copy the database from the PC
-
-Copy `money.db` **together with** `money.db-wal` and `money.db-shm` if they exist.
-Recent changes may still be sitting in the `-wal` file, and copying `money.db` alone
-would lose them.
-
-From PowerShell on the PC, in the solution folder (the one holding `MoneySite.sln`).
-Replace `tower` with your server's name or IP address:
-
-```powershell
-$files = Get-Item MoneySite\Data\money.db, MoneySite\Data\money.db-wal, MoneySite\Data\money.db-shm -ErrorAction SilentlyContinue
-$files | Select-Object Name, Length
-scp $files.FullName root@tower:/mnt/user/appdata/moneysite/
-```
-
-Windows 11 includes `scp`. SSH must be enabled on the server, under **Settings →
-Management Access**. Copying over an SMB share works too, if your `appdata`
-share is exported.
-
-Then, on Unraid, hand the files to the container's non-root `app` user (UID 1654).
-Without this the app can't write to the database:
-
-```bash
-chown -R 1654:1654 /mnt/user/appdata/moneysite
-ls -l /mnt/user/appdata/moneysite
-```
-
-`money.db` should be roughly the same size as on the PC. Keep the PC's copy as a backup
-until you have confirmed the Unraid copy works. Older backups such as
-`money.backup-*.db` are not needed on the server.
-
-## 4. Fill in the settings
-
-You need these values, the **same** ones the Windows app uses:
-
-| Variable | Value |
-|---|---|
-| `Plaid__ClientID` | your Plaid client ID |
-| `Plaid__ClientSecret` | your Plaid secret |
-| `Plaid__Environment` | same as on the PC. Yours is `trial`, which the app treats as `production`. |
-| `MONEYSITE_DB_PATH` | `/data/money.db` |
-| `TZ` | your time zone, e.g. `America/New_York` |
-
-To see the Plaid values, run this on the PC in your own terminal:
-
-```powershell
-dotnet user-secrets list --project MoneySite
-```
-
-- The access tokens in `money.db` only work with the same client ID and environment
-  they were created with. Different values mean every bank needs re-linking.
-- The container runs as Production, which does **not** load user-secrets. That's why
-  the keys must come in as environment variables.
-- Without `TZ` the container runs in UTC, which shifts "today", daily balance
-  snapshots and month boundaries.
-
-## 5. Run it on Unraid
-
-### Option A: Unraid template (recommended)
-
-Every push to `main` on GitHub builds the image `ghcr.io/hintab/moneysite:latest`
-(see `.github/workflows/docker-image.yml`), and the template in
-[Hintab/docker_templates](https://github.com/Hintab/docker_templates) pulls it.
-
-1. Under **Docker**, at the bottom of the page, find **Template repositories**, add
-   `https://github.com/Hintab/docker_templates` and save.
-2. Choose **Add Container**, pick **MoneySite** from the template list.
-3. Fill in the Plaid values and time zone (step 4) and apply.
-
-Updates: push to GitHub, wait for the build to finish (the repo's **Actions** tab), then
-choose **Check for updates** on Unraid's Docker page.
-
-### Building it on the server instead
-
-Copy the solution folder (the one with `Dockerfile`, `docker-compose.yml` and
-`MoneySite/`) to the server, for example to `/mnt/user/appdata/moneysite-src`. Leave out
-`bin`, `obj` and `MoneySite\Data\*.db*`. Then use Option B or C.
-
-### Option B: Compose Manager plugin
-
-1. Install the **Compose Manager** plugin from Community Applications.
-2. Under **Docker → Compose**, add a new stack named `moneysite`.
-3. Edit the stack's compose file and paste in `docker-compose.yml`. Change
-   `build: .` to the folder you copied, e.g. `build: /mnt/user/appdata/moneysite-src`.
-4. Edit the stack's ENV file and paste in the contents of `.env.example` with your real
-   values (step 4).
-5. Choose **Compose Up**. The first start builds the image, which takes a few minutes.
-
-### Option C: "Add Container" with a local build
-
-1. Build the image in the Unraid terminal:
+1. Install the **User Scripts** plugin from the Apps tab.
+2. In the Unraid terminal, create the script and run it once:
 
    ```bash
-   docker build -t moneysite:latest /mnt/user/appdata/moneysite-src
+   mkdir -p /boot/config/plugins/user.scripts/scripts/docker-templates
+   cat > /boot/config/plugins/user.scripts/scripts/docker-templates/script <<'EOF'
+   #!/bin/bash
+   #description=Pulls every template from Hintab/docker_templates into Unraid's default templates
+   DEST=/boot/config/plugins/dockerMan/templates/hintab
+   TMP=$(mktemp -d)
+   if curl -fsSL https://github.com/Hintab/docker_templates/archive/refs/heads/main.tar.gz | tar -xz -C "$TMP"; then
+     mkdir -p "$DEST" && rm -f "$DEST"/*.xml
+     cp "$TMP"/docker_templates-main/*.xml "$DEST/" && ls "$DEST"
+   else
+     echo "couldn't download templates from GitHub"
+   fi
+   rm -rf "$TMP"
+   EOF
+   bash /boot/config/plugins/user.scripts/scripts/docker-templates/script
    ```
 
-2. Under **Docker → Add Container**, set:
-   - **Repository:** `moneysite:latest`
-   - **Port:** container `8080` → host `8080`
-   - **Path:** container `/data` → host `/mnt/user/appdata/moneysite`
-   - **Variables:** `Plaid__ClientID`, `Plaid__ClientSecret`, `Plaid__Environment`,
-     `MONEYSITE_DB_PATH`, `TZ` (step 4)
-3. Apply.
+3. Under **Settings → User Scripts**, set **docker-templates** to **Scheduled Daily** and
+   click **Apply**, so template changes on GitHub show up by themselves.
 
-Unraid's update check may show this image as "not available", because it exists only
-on the server. That doesn't stop it from running. If the container won't create
-because Unraid tries to pull the image from a registry, use Option B instead.
+## 2. Add the container
 
-### Check it
+1. **Docker → Add Container → Template**, and pick **MoneySite** under
+   **[ Default templates ]**.
+2. Fill in:
 
-Open `http://<server-ip>:8080` from a device on your home network. Your accounts,
-categories and history should all be there, and the Accounts page should list your
-linked banks. The background worker syncs each bank every 24 hours, same as before.
+   | Field | Value |
+   |---|---|
+   | Plaid Client ID / Plaid Secret | from the Plaid dashboard (Developers → Keys). To keep existing bank connections, use the **same** ones as your current copy. |
+   | Plaid Environment | `production` for real banks (Plaid's Trial plan is production) |
+   | Time Zone | yours, e.g. `America/Indiana/Indianapolis`. Without it "today" and month boundaries are in UTC. |
 
-## Don't run both copies at the same time
+3. Click **Apply**, then open `http://<server-ip>:8080`.
 
-After the move, the Unraid database and the PC's `MoneySite\Data\money.db` are two
-separate copies. If both run:
+To change settings later, use the container's icon → **Edit**, not Add Container. Add
+Container always starts from the template's defaults.
 
-- both sync the same banks with the same access tokens, and each keeps its own cursor,
-  so they drift apart;
-- anything you change in one (categories, rules, labels) does not appear in the other.
+## 3. Bring over your existing data (optional)
 
-Treat Unraid as the live copy. To use the PC again (for example to re-link a bank, see
-below):
+Skip this for a fresh start; connect banks from the **Accounts** page instead.
 
-1. Stop the container.
-2. Copy `money.db` and its `-wal`/`-shm` files back to the PC.
-3. Run the app on the PC.
-4. Stop it, then copy the files back to the server the same way as in step 3, including
-   the `chown`.
+To move from another copy (for example the app on your PC), do it in the browser:
+
+1. On the **old** copy, open **Accounts → Backup & restore → Download backup**.
+2. Stop the old copy, and don't run it again (see below).
+3. On the **new** copy, open **Accounts → Restore from backup…**, pick the file, and
+   confirm.
+
+Your banks keep working without re-linking, as long as the new copy uses the same Plaid
+client ID, secret and environment. The data that was there before the restore is kept
+next to the database as `money.before-restore-<date>.db`.
+
+## Don't run two copies at the same time
+
+Two copies with the same data both sync the same banks with the same access tokens, and
+each keeps its own sync position, so they drift apart. Changes in one (categories, rules,
+labels) don't appear in the other. Pick one live copy. To switch, back up from the old
+one, restore into the new one, and stop the old one.
 
 ## Connecting banks from another device (HTTPS)
 
@@ -192,45 +101,42 @@ below):
 
 **Connect a bank**, **Enable investment tracking** and re-linking a bank open Plaid
 Link in your browser. That **may not work** when the page is opened over plain
-`http://<server-ip>:8080` from another device. Browsers only treat `http://localhost`
-as a secure page, and Plaid Link may need one, especially for banks that sign in
-through their own website (OAuth). This has not been tested here. If Plaid Link fails
-to open or errors out, you have two options:
-
-- **A local reverse proxy with a certificate** on Unraid, e.g. Nginx Proxy Manager or
-  Caddy. It must pass WebSockets (Blazor Server needs them). Keep it local only, and
-  never port-forward it.
-- **Re-link on the PC**: stop the container, run the app on the PC at
-  `https://localhost`, make the change, then move the database back (see "Don't run
-  both copies at the same time").
+`http://<server-ip>:8080` from another device, because browsers only treat
+`http://localhost` as a secure page. This has not been tested here. If Plaid Link fails,
+put a local reverse proxy with a certificate in front of it (e.g. Nginx Proxy Manager or
+Caddy on Unraid; it must pass WebSockets), and keep that proxy local only.
 
 ## Protect the data: it holds Plaid access tokens
 
-Anyone who can read `money.db`, and also has your Plaid client ID and secret, can pull
-your bank data.
-
-- **Unraid appdata backups include `money.db`.** That includes the Appdata Backup
-  plugin and any copies of the `appdata` share. Keep those backups on the server or
-  another trusted, encrypted location. Don't sync them to a shared or public cloud
-  folder. Let the backup stop the container while it runs, so the `-wal` file is
-  written back first.
-- The `money.backup-*.db` files on the PC (and their `-wal`/`-shm` files) hold the
-  **same Plaid access tokens**. Protect them the same way, and delete the ones you no
-  longer need.
-- The ENV file and the container's variables hold your Plaid secret. Don't share
-  screenshots of them.
-- The image contains no database, because `.dockerignore` excludes `*.db*`.
+- **Backups from the Accounts page and Unraid appdata backups contain everything,**
+  including the Plaid access tokens. Keep them on the server or another trusted,
+  encrypted place; don't sync them to a shared or public cloud folder.
+- The container's variables hold your Plaid secret. Don't share screenshots of them.
+- The image contains no database: `.dockerignore` excludes `*.db*`.
 - To remove a Plaid connection for good, disconnect the bank in the app so the token is
   revoked at Plaid. Deleting the database alone does not revoke the token.
+
+## Settings reference
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `Plaid__ClientID`, `Plaid__ClientSecret` | — | Plaid keys. The container doesn't read dotnet user-secrets. |
+| `Plaid__Environment` | `sandbox` | `production` for real banks |
+| `TZ` | UTC | Time zone for "today", daily balances and months |
+| `PUID`, `PGID` | `99`, `100` | Owner of `/data` and the user the app runs as |
+| `MONEYSITE_DB_PATH` | `/data/money.db` | Leave as is |
+
+## Building it yourself
+
+`docker-compose.yml` builds from source: copy the folder holding `Dockerfile` and
+`MoneySite/` to the server and run `docker compose up -d --build` there, or point
+Unraid's Compose Manager plugin at it. The published image
+(`hintab/moneysite:latest` on Docker Hub, also `ghcr.io/hintab/moneysite:latest`) is
+rebuilt and smoke-tested on every push to `main`.
 
 ## Notes
 
 - SQLite and Unraid's `/mnt/user` layer: if you see "database is locked" or I/O errors,
   map `/mnt/cache/appdata/moneysite` (or your pool's path) instead of `/mnt/user/...`.
-  Another option is to set the `appdata` share to exclusive access. This is common
-  advice for SQLite-based containers on Unraid.
-- On every start the app re-runs automatic categorization and `DbSeed` schema checks.
-  This is the same as running locally and does not touch categories picked by hand.
-- You may see a warning about ASP.NET Core data-protection keys not being saved outside
-  the container. It only means you may have to reload open browser tabs after the
-  container restarts.
+- On every start the app re-runs automatic categorization and its schema checks. Categories
+  picked by hand are never changed.

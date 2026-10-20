@@ -7,6 +7,8 @@
 @inject DataWindow Window
 @inject Categorizer Categorizer
 @inject IJSRuntime JS
+@inject BackupService Backups
+@inject NavigationManager Nav
 
 @* Connected banks and their accounts in one place: connect, sync, label, disconnect. *@
 
@@ -160,6 +162,28 @@ else if (PlaidSvc.EnvironmentName == "sandbox")
     </section>
 }
 
+@* ---------- Backup & restore (moving to another machine) ---------- *@
+<section class="panel">
+    <h2>Backup &amp; restore <span class="info" title="A backup holds everything: banks (including their Plaid connections), transactions, categories, labels and balance history. Anyone with the file can see all of it, so keep it private.">i</span></h2>
+    <p class="muted small">To move to another machine: download a backup here, then restore it on the new copy. Nothing needs re-linking as long as both use the same Plaid keys.</p>
+    <div class="row" style="margin:0">
+        <a class="btn secondary" href="backup/download" download>Download backup</a>
+        <label class="btn secondary file-btn">
+            Restore from backup…
+            <InputFile OnChange="PickRestore" accept=".db" disabled="@_busy" />
+        </label>
+    </div>
+    @if (_restoreFile is not null)
+    {
+        <div class="notice">
+            <p><b>Replace everything here with @_restoreFile.Name</b> (@(_restoreFile.Size / 1024) KB, saved @_restoreFile.LastModified.LocalDateTime.ToString("MMM d, h:mm tt"))?
+                Your current data is kept as a safety copy next to the database.</p>
+            <button class="btn danger" @onclick="Restore" disabled="@_busy">Replace and restore</button>
+            <button class="btn secondary" @onclick="() => _restoreFile = null" disabled="@_busy">Cancel</button>
+        </div>
+    }
+</section>
+
 @* ---------- History window ---------- *@
 @if (_histories.Count > 1)
 {
@@ -200,7 +224,14 @@ else if (PlaidSvc.EnvironmentName == "sandbox")
     private string _status = "";
     private DotNetObjectReference<Accounts>? _selfRef;
 
-    protected override async Task OnInitializedAsync() => await Load();
+    [SupplyParameterFromQuery] public int? Restored { get; set; }
+
+    protected override async Task OnInitializedAsync()
+    {
+        await Load();
+        if (Restored == 1)
+            SetStatus($"Backup restored: {_accounts.Count} account{(_accounts.Count == 1 ? "" : "s")} and {_items.Count} bank{(_items.Count == 1 ? "" : "s")}. Syncing works as before.");
+    }
 
     private async Task Load()
     {
@@ -445,6 +476,37 @@ else if (PlaidSvc.EnvironmentName == "sandbox")
         _aligned = e.Value is true;
         await Window.SetAlignedAsync(_aligned);
         SetStatus(_aligned ? $"Reports now start on {_latestStart:MMM d, yyyy}." : "Reports now use all history.");
+    }
+
+    // ---------- Backup & restore ----------
+
+    private const long MaxBackupBytes = 1024L * 1024 * 1024;   // 1 GB, far above any real database
+    private IBrowserFile? _restoreFile;
+
+    private void PickRestore(InputFileChangeEventArgs e)
+    {
+        _restoreFile = e.File;
+        SetStatus("");
+    }
+
+    private async Task Restore()
+    {
+        if (_restoreFile is null) return;
+        _busy = true;
+        SetStatus($"Restoring {_restoreFile.Name}…");
+        StateHasChanged();
+        string? error;
+        await using (var upload = _restoreFile.OpenReadStream(MaxBackupBytes))
+            error = await Backups.RestoreAsync(upload);
+        _busy = false;
+        _restoreFile = null;
+        if (error is not null)
+        {
+            SetStatus(error, true);
+            return;
+        }
+        // Every page should show the restored data, so reload the whole app.
+        Nav.NavigateTo("accounts?restored=1", forceLoad: true);
     }
 
     public void Dispose() => _selfRef?.Dispose();
