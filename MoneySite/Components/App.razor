@@ -7,6 +7,14 @@
     <meta name="theme-color" content="#f3f5fa" media="(prefers-color-scheme: light)" />
     <base href="/" />
     <title>Money Manager</title>
+    @* Installable app ("Install" in Chrome/Edge, "Add to Home Screen" on iPhone). *@
+    <link rel="manifest" href="manifest.webmanifest" />
+    <link rel="icon" type="image/png" href="icons/favicon.png" />
+    <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="Money" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <link rel="stylesheet" href="app.css" />
     <script src="https://cdn.plaid.com/link/v2/stable/link-initialize.js"></script>
     <script src="app.js"></script>

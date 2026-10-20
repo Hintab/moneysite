@@ -112,3 +112,8 @@ window.openPlaidLink = function (linkToken, dotNetRef, successMethod) {
     });
     document.addEventListener('scroll', function () { if (box) box.style.display = 'none'; }, true);
 })();
+
+// Lets Chrome/Edge offer "Install app". Browsers only allow it on https:// or localhost.
+if ('serviceWorker' in navigator && window.isSecureContext) {
+    navigator.serviceWorker.register('sw.js').catch(function (e) { console.warn('Service worker not registered', e); });
+}

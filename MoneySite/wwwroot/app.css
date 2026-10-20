@@ -503,3 +503,28 @@ svg.pie .pie-pct { fill: #fff; font-size: 11px; font-weight: 700; pointer-events
 /* ---------- Accounts: restore button wraps a hidden file picker ---------- */
 .file-btn { position: relative; overflow: hidden; cursor: pointer; }
 .file-btn input[type=file] { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+
+/* ============================================================
+   Readable text on touch screens. Every size above is in rem, so raising the root size
+   scales the whole UI; the smallest labels get an extra bump on top.
+   ============================================================ */
+@media (max-width: 1099px) {
+    html { font-size: 106.25%; }                       /* 17px: Fold inner screen, tablets */
+    .side-link { font-size: .72rem; }
+    .table th, .table td { padding-left: .5rem; padding-right: .5rem; }
+    .tx-table select.cat { min-width: 0; width: 8.5rem; }
+}
+@media (max-width: 699px) {
+    html { font-size: 112.5%; }                        /* 18px: phones, Fold cover screen */
+    body { line-height: 1.5; }
+    .small, .peer, .summary, .legend, .status, .wd-lbl, .subtitle,
+    .card small, .card .delta, .kpi small, .kpi .delta,
+    .group-card header small, .nw-card .delta, .chart-wrap .tip { font-size: .84rem; }
+    .table th, th.sortable { font-size: .74rem; }
+    .tx-table .c-date { font-size: .82rem; }
+    .tab { font-size: .7rem; }
+    .info { width: 19px; height: 19px; font-size: .74rem; }
+    svg.flowchart .axis, svg.linechart .axis { font-size: 27px; }
+    svg.linechart .axis.alt { display: none; }               /* every other price label */
+    svg.flowchart, svg.linechart { overflow: visible; }      /* top label isn't clipped */
+}

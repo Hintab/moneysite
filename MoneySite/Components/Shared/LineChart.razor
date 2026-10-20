@@ -79,8 +79,9 @@
     {
         var sb = new System.Text.StringBuilder();
         string E(string s) => System.Net.WebUtility.HtmlEncode(s);
-        foreach (var t in _yTicks)
-            sb.Append($"<text class=\"axis\" x=\"{F(L - 8)}\" y=\"{F(t.Y + 4)}\" text-anchor=\"end\">{E(t.Label)}</text>");
+        // "alt" labels (every other one) are hidden on phones, where they would crowd.
+        foreach (var (t, i) in _yTicks.Select((t, i) => (t, i)))
+            sb.Append($"<text class=\"axis{(i % 2 == 1 ? " alt" : "")}\" x=\"{F(L - 8)}\" y=\"{F(t.Y + 4)}\" text-anchor=\"end\">{E(t.Label)}</text>");
         foreach (var t in _xTicks)
             sb.Append($"<text class=\"axis\" x=\"{F(t.X)}\" y=\"{F(H - 6)}\" text-anchor=\"middle\">{E(t.Label)}</text>");
         return sb.ToString();
