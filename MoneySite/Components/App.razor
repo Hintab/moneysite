@@ -7,8 +7,10 @@
     <meta name="theme-color" content="#f3f5fa" media="(prefers-color-scheme: light)" />
     <base href="/" />
     <title>Money Manager</title>
-    @* Installable app ("Install" in Chrome/Edge, "Add to Home Screen" on iPhone). *@
-    <link rel="manifest" href="manifest.webmanifest" />
+    @* Installable app ("Install" in Chrome/Edge, "Add to Home Screen" on iPhone).
+       use-credentials: browsers fetch the manifest without the sign-in a reverse proxy may
+       ask for, and a 401 there silently turns off "Install". *@
+    <link rel="manifest" href="manifest.webmanifest" crossorigin="use-credentials" />
     <link rel="icon" type="image/png" href="icons/favicon.png" />
     <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
