@@ -20,6 +20,9 @@ ENV MONEYSITE_DB_PATH=/data/money.db \
     PUID=99 \
     PGID=100
 VOLUME ["/data"]
+# Unraid shows this icon and adds a WebUI link even when its template doesn't set them.
+LABEL net.unraid.docker.icon="https://raw.githubusercontent.com/Hintab/moneysite/main/MoneySite/wwwroot/icons/icon-512.png" \
+      net.unraid.docker.webui="http://[IP]:[PORT:8080]"
 # The .NET 8 base image already listens on port 8080 (ASPNETCORE_HTTP_PORTS=8080).
 EXPOSE 8080
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
